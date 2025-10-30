@@ -1,3 +1,8 @@
 _gitignore/
 
 .idea/
+
+# Ignore files used by Aider AI tool
+.aider*
+!.aider.conf.yml
+!.aiderignore
