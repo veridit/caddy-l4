@@ -7,11 +7,19 @@ import (
 	"errors"
 	"io"
 	"net"
+	"sync"
 	"testing"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/mholt/caddy-l4/layer4"
 	"go.uber.org/zap"
+)
+
+const (
+	// ProtocolVersion2 is for v2.0: (2 * 65536) + 0 = 131072. Used to test rejection of old versions.
+	ProtocolVersion2 = 131072
+	// ProtocolVersion4 is for v4.0: (4 * 65536) + 0 = 262144. Used to test rejection of future versions.
+	ProtocolVersion4 = 262144
 )
 
 func assertNoError(t *testing.T, err error) {
@@ -21,333 +29,239 @@ func assertNoError(t *testing.T, err error) {
 	}
 }
 
+func closePipe(wg *sync.WaitGroup, c1 net.Conn, c2 net.Conn) {
+	wg.Wait()
+	_ = c1.Close()
+	_ = c2.Close()
+}
+
+func matchTester(t *testing.T, matcher *MatchPostgres, input []byte) (bool, error) {
+	wg := &sync.WaitGroup{}
+	in, out := net.Pipe()
+	defer closePipe(wg, in, out)
+
+	// cx is the connection that the matcher will read from.
+	cx := layer4.WrapConnection(out, []byte{}, zap.NewNop())
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if len(input) > 0 {
+			_, err := in.Write(input)
+			assertNoError(t, err)
+		}
+		// Closing the writer end of the pipe will send an EOF to the reader.
+		_ = in.Close()
+	}()
+
+	matched, err := matcher.Match(cx)
+
+	// After the matcher has done its reading, we must drain the rest of the
+	// connection so that the writer goroutine doesn't block forever.
+	_, _ = io.Copy(io.Discard, cx)
+
+	return matched, err
+}
+
 func buildStartupMessage(version uint32, params map[string]string) []byte {
 	var payload bytes.Buffer
-
-	// Write protocol version
 	binary.Write(&payload, binary.BigEndian, version)
-
-	// Write parameters (key\0value\0)
 	for k, v := range params {
 		payload.WriteString(k)
-		payload.WriteByte(0) // Null terminator for key
+		payload.WriteByte(0)
 		payload.WriteString(v)
-		payload.WriteByte(0) // Null terminator for value
+		payload.WriteByte(0)
 	}
-
-	payload.WriteByte(0) // Final terminator
-
-	payloadBytes := payload.Bytes()
-	payloadLen := len(payloadBytes)
-	totalLen := uint32(payloadLen + lenFieldSize)
+	payload.WriteByte(0)
 
 	var message bytes.Buffer
-	binary.Write(&message, binary.BigEndian, totalLen)
-	message.Write(payloadBytes)
-
+	binary.Write(&message, binary.BigEndian, uint32(payload.Len()+lengthFieldSize))
+	message.Write(payload.Bytes())
 	return message.Bytes()
 }
 
 func buildSSLRequest() []byte {
 	var message bytes.Buffer
-	totalLen := uint32(8) // 4 bytes length, 4 bytes code
-	payloadCode := uint32(sslRequestCode)
-
-	binary.Write(&message, binary.BigEndian, totalLen)    // Message Length (8)
-	binary.Write(&message, binary.BigEndian, payloadCode) // SSLRequest Code
-
+	binary.Write(&message, binary.BigEndian, uint32(8))
+	binary.Write(&message, binary.BigEndian, uint32(SSLRequestCode))
 	return message.Bytes()
 }
 
 func buildCancelRequest(pid, secretKey uint32) []byte {
 	var message bytes.Buffer
-	totalLen := uint32(16) // 4 bytes length, 4 bytes code, 4 bytes pid, 4 bytes key
-
-	binary.Write(&message, binary.BigEndian, totalLen)                  // Message Length (16)
-	binary.Write(&message, binary.BigEndian, uint32(cancelRequestCode)) // CancelRequest Code
-	binary.Write(&message, binary.BigEndian, pid)                       // PID
-	binary.Write(&message, binary.BigEndian, secretKey)                 // Secret Key
-
+	binary.Write(&message, binary.BigEndian, uint32(16))
+	binary.Write(&message, binary.BigEndian, uint32(CancelRequestCode))
+	binary.Write(&message, binary.BigEndian, pid)
+	binary.Write(&message, binary.BigEndian, secretKey)
 	return message.Bytes()
 }
 
 func TestMatchPostgres(t *testing.T) {
 	tests := []struct {
 		name      string
+		matcher   *MatchPostgres
 		input     []byte
 		wantMatch bool
 	}{
-		// Valid Message Tests
+		// Basic protocol validation
 		{
 			name:      "Valid SSLRequest",
+			matcher:   &MatchPostgres{},
 			input:     buildSSLRequest(),
 			wantMatch: true,
 		},
 		{
 			name:      "Valid CancelRequest",
+			matcher:   &MatchPostgres{},
 			input:     buildCancelRequest(12345, 67890),
 			wantMatch: true,
 		},
 		{
-			name:      "Valid StartupMessage V3 (No Params)",
-			input:     buildStartupMessage(0x00030000, nil), // Protocol 3.0
+			name:      "Valid StartupMessage V3",
+			matcher:   &MatchPostgres{},
+			input:     buildStartupMessage(ProtocolVersion3, map[string]string{"user": "test"}),
 			wantMatch: true,
 		},
 		{
-			name: "Valid StartupMessage V3 (With Params)",
-			input: buildStartupMessage(0x00030000, map[string]string{
-				"user":     "testuser",
-				"database": "testdb",
-			}),
-			wantMatch: true,
-		},
-		{
-			name: "Valid StartupMessage V3 (One Param)",
-			input: buildStartupMessage(0x00030000, map[string]string{
-				"client_encoding": "UTF8",
-			}),
-			wantMatch: true,
-		},
-		{
-			name: "Valid StartupMessage V3 (Multiple Params)",
-			input: buildStartupMessage(0x00030000, map[string]string{
-				"user":             "postgres",
-				"database":         "mydb",
-				"client_encoding":  "UTF8",
-				"application_name": "pgadmin",
-				"search_path":      "public,private",
-			}),
-			wantMatch: true,
-		},
-		{
-			name: "Valid StartupMessage V3 (Empty Values)",
-			input: buildStartupMessage(0x00030000, map[string]string{
-				"user":     "",
-				"database": "",
-			}),
-			wantMatch: true,
-		},
-		{
-			name: "Valid StartupMessage MinorVersion V3.1",
-			input: buildStartupMessage(0x00030001, map[string]string{
-				"user": "testuser",
-			}),
-			wantMatch: true,
-		},
-
-		// Edge Case Startup Message Tests
-		{
-			name: "Valid StartupMessage - Unicode Characters",
-			input: buildStartupMessage(0x00030000, map[string]string{
-				"user":     "测试用户",
-				"database": "数据库",
-			}),
-			wantMatch: true,
-		},
-		{
-			name: "Valid StartupMessage - Special Characters",
-			input: buildStartupMessage(0x00030000, map[string]string{
-				"user":     "test!@#$%^&*()",
-				"database": "db-with_special.chars",
-			}),
-			wantMatch: true,
-		},
-
-		// Non-Matches - Message Length Issues
-		{
-			name:      "Too Short (EOF reading length)",
-			input:     []byte{0x00, 0x00}, // Only 2 bytes, less than length header size
+			name:      "Too Short",
+			matcher:   &MatchPostgres{},
+			input:     []byte{0x00, 0x00},
 			wantMatch: false,
 		},
 		{
 			name:      "Invalid Message Length (Too Small)",
-			input:     []byte{0x00, 0x00, 0x00, 0x07}, // Length 7, minimum is 8
+			matcher:   &MatchPostgres{},
+			input:     []byte{0x00, 0x00, 0x00, 0x07},
 			wantMatch: false,
 		},
 		{
-			name:      "Zero Payload Length (Invalid)",
-			input:     []byte{0x00, 0x00, 0x00, 0x04}, // Length 4 -> Payload 0
+			name:      "Unsupported Protocol Version (V2)",
+			matcher:   &MatchPostgres{},
+			input:     buildStartupMessage(ProtocolVersion2, map[string]string{"user": "test"}),
 			wantMatch: false,
 		},
 		{
-			name: "Too Short (EOF reading payload)",
-			// Declares length 10, but only provides 8 bytes total (4 length + 4 payload)
-			input:     append([]byte{0x00, 0x00, 0x00, 0x0A}, buildStartupMessage(0x00030000, nil)[4:8]...),
+			name:      "Unsupported Protocol Version (V4)",
+			matcher:   &MatchPostgres{},
+			input:     buildStartupMessage(ProtocolVersion4, map[string]string{"user": "test"}),
 			wantMatch: false,
 		},
 		{
-			name: "Declared Payload Too Large",
-			input: func() []byte {
-				largePayloadLen := uint32(maxPayloadSize + 1)
-				totalLen := largePayloadLen + lenFieldSize
-				header := make([]byte, 4)
-				binary.BigEndian.PutUint32(header, totalLen)
-				return header
-			}(),
+			name:      "Malformed Startup (Missing Final Null)",
+			matcher:   &MatchPostgres{},
+			input:     buildStartupMessage(ProtocolVersion3, map[string]string{"user": "test"})[0:18],
 			wantMatch: false,
 		},
 
-		// Non-Matches - Protocol Version Issues
+		// TLS Tests
 		{
-			name: "Unsupported Protocol Version (V2)",
-			input: buildStartupMessage(0x00020000, map[string]string{
-				"user": "test",
-			}),
+			name:      "TLS required with SSLRequest",
+			matcher:   &MatchPostgres{TLS: "required"},
+			input:     buildSSLRequest(),
+			wantMatch: true,
+		},
+		{
+			name:      "TLS required with StartupMessage",
+			matcher:   &MatchPostgres{TLS: "required"},
+			input:     buildStartupMessage(ProtocolVersion3, nil),
 			wantMatch: false,
 		},
 		{
-			name: "Invalid Protocol Version (V0)",
-			input: buildStartupMessage(0x00000000, map[string]string{
-				"user": "test",
-			}),
+			name:      "TLS disabled with SSLRequest",
+			matcher:   &MatchPostgres{TLS: "disabled"},
+			input:     buildSSLRequest(),
 			wantMatch: false,
 		},
 		{
-			name: "Invalid Protocol Version (V1)",
-			input: buildStartupMessage(0x00010000, map[string]string{
-				"user": "test",
-			}),
-			wantMatch: false,
-		},
-		{
-			name: "Future Protocol Version (V4)",
-			input: buildStartupMessage(0x00040000, map[string]string{
-				"user": "test",
-			}),
-			wantMatch: false, // Should fail as our matcher only accepts V3
-		},
-
-		// Non-Matches - Special Message Type Issues
-		{
-			name:      "SSLRequest Code but Wrong Length",
-			input:     append(buildSSLRequest()[:4], []byte{0x01, 0x02, 0x03, 0x04, 0x05}...), // Length OK, Code OK, Payload length incorrect
-			wantMatch: false,
-		},
-		{
-			name: "CancelRequest Code but Wrong Length",
-			input: func() []byte {
-				var msg bytes.Buffer
-				binary.Write(&msg, binary.BigEndian, uint32(12)) // Length 12 (too short)
-				binary.Write(&msg, binary.BigEndian, uint32(cancelRequestCode))
-				binary.Write(&msg, binary.BigEndian, uint32(123)) // PID
-				// Missing secret key
-				return msg.Bytes()
-			}(),
+			name:      "TLS allowed with SSLRequest and user filter",
+			matcher:   &MatchPostgres{TLS: "", User: map[string][]string{"alice": {}}},
+			input:     buildSSLRequest(),
 			wantMatch: false,
 		},
 
-		// Non-Matches - Malformed Startup Message Structure
+		// User/DB Tests
 		{
-			name:      "StartupMessage Payload Too Short",
-			input:     []byte{0x00, 0x00, 0x00, 0x08, 0x00, 0x03, 0x00, 0x00}, // No final null byte
+			name:      "User match (any DB)",
+			matcher:   &MatchPostgres{User: map[string][]string{"alice": {}}},
+			input:     buildStartupMessage(ProtocolVersion3, map[string]string{"user": "alice"}),
+			wantMatch: true,
+		},
+		{
+			name:      "User mismatch",
+			matcher:   &MatchPostgres{User: map[string][]string{"alice": {}}},
+			input:     buildStartupMessage(ProtocolVersion3, map[string]string{"user": "bob"}),
 			wantMatch: false,
 		},
 		{
-			name: "Malformed Startup (Missing Final Null)",
-			input: func() []byte {
-				msg := buildStartupMessage(0x00030000, map[string]string{"user": "test"})
-				return msg[:len(msg)-1] // Remove last byte (the final null)
-			}(),
+			name:      "User and DB match",
+			matcher:   &MatchPostgres{User: map[string][]string{"alice": {"stars_db"}}},
+			input:     buildStartupMessage(ProtocolVersion3, map[string]string{"user": "alice", "database": "stars_db"}),
+			wantMatch: true,
+		},
+		{
+			name:      "Public DB match",
+			matcher:   &MatchPostgres{User: map[string][]string{"*": {"public_db"}}},
+			input:     buildStartupMessage(ProtocolVersion3, map[string]string{"database": "public_db"}),
+			wantMatch: true,
+		},
+
+		// Client Tests
+		{
+			name:      "Client match",
+			matcher:   &MatchPostgres{Client: []string{"pgadmin"}},
+			input:     buildStartupMessage(ProtocolVersion3, map[string]string{"application_name": "pgadmin"}),
+			wantMatch: true,
+		},
+		{
+			name:      "Client mismatch",
+			matcher:   &MatchPostgres{Client: []string{"pgadmin"}},
+			input:     buildStartupMessage(ProtocolVersion3, map[string]string{"application_name": "psql"}),
 			wantMatch: false,
 		},
 		{
-			name: "Malformed Startup (Missing Value Null)",
-			input: func() []byte {
-				// Len, Ver, "user\0", "test" (NO NULL) , final \0
-				payload := []byte{
-					0x00, 0x03, 0x00, 0x00, // Version
-					'u', 's', 'e', 'r', 0x00, // Key + Null
-					't', 'e', 's', 't', // Value (Missing Null!)
-					0x00, // Final Null
-				}
-				totalLen := uint32(len(payload) + lenFieldSize)
-				header := make([]byte, 4)
-				binary.BigEndian.PutUint32(header, totalLen)
-				return append(header, payload...)
-			}(),
-			wantMatch: false,
+			name:      "Client match with 'postgresql' protocol",
+			matcher:   &MatchPostgres{Client: []string{"postgresql"}},
+			input:     buildStartupMessage(ProtocolVersion3, map[string]string{"application_name": "postgresql"}),
+			wantMatch: true,
+		},
+
+		// Combined Tests
+		{
+			name:      "User and Client match",
+			matcher:   &MatchPostgres{User: map[string][]string{"alice": {}}, Client: []string{"pgadmin"}},
+			input:     buildStartupMessage(ProtocolVersion3, map[string]string{"user": "alice", "application_name": "pgadmin"}),
+			wantMatch: true,
 		},
 		{
-			name: "Malformed Startup (Missing Key Null)",
-			input: func() []byte {
-				// Len, Ver, "user" (NO NULL), "test\0", final \0
-				payload := []byte{
-					0x00, 0x03, 0x00, 0x00, // Version
-					'u', 's', 'e', 'r', // Key (Missing Null!)
-					't', 'e', 's', 't', 0x00, // Value + Null
-					0x00, // Final Null
-				}
-				totalLen := uint32(len(payload) + lenFieldSize)
-				header := make([]byte, 4)
-				binary.BigEndian.PutUint32(header, totalLen)
-				return append(header, payload...)
-			}(),
-			wantMatch: false,
-		},
-		{
-			name: "Malformed Startup (No Parameters at All)",
-			input: func() []byte {
-				// Len, Ver, (NO PARAMS, NO FINAL NULL)
-				payload := []byte{
-					0x00, 0x03, 0x00, 0x00, // Version only
-				}
-				totalLen := uint32(len(payload) + lenFieldSize)
-				header := make([]byte, 4)
-				binary.BigEndian.PutUint32(header, totalLen)
-				return append(header, payload...)
-			}(),
-			wantMatch: false,
-		},
-		{
-			name: "Malformed Startup (Double Null for Key)",
-			input: func() []byte {
-				// Len, Ver, "\0\0"
-				payload := []byte{
-					0x00, 0x03, 0x00, 0x00, // Version
-					0x00, 0x00, // Two nulls (invalid)
-				}
-				totalLen := uint32(len(payload) + lenFieldSize)
-				header := make([]byte, 4)
-				binary.BigEndian.PutUint32(header, totalLen)
-				return append(header, payload...)
-			}(),
+			name:      "User mismatch, Client match",
+			matcher:   &MatchPostgres{User: map[string][]string{"alice": {}}, Client: []string{"pgadmin"}},
+			input:     buildStartupMessage(ProtocolVersion3, map[string]string{"user": "bob", "application_name": "pgadmin"}),
 			wantMatch: false,
 		},
 
-		// Non-Matches - Other Protocols
+		// OR Logic Simulation
 		{
-			name:      "Other Protocol (HTTP GET)",
-			input:     []byte("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"),
+			name:      "OR logic: user alice on planets_db (matches)",
+			matcher:   &MatchPostgres{User: map[string][]string{"alice": {"planets_db"}}},
+			input:     buildStartupMessage(ProtocolVersion3, map[string]string{"user": "alice", "database": "planets_db"}),
+			wantMatch: true,
+		},
+		{
+			name:      "OR logic: tls required (matches)",
+			matcher:   &MatchPostgres{TLS: "required"},
+			input:     buildSSLRequest(),
+			wantMatch: true,
+		},
+		{
+			name:      "OR logic: user alice on planets_db (fails tls required check)",
+			matcher:   &MatchPostgres{TLS: "required"},
+			input:     buildStartupMessage(ProtocolVersion3, map[string]string{"user": "alice", "database": "planets_db"}),
 			wantMatch: false,
 		},
 		{
-			name:      "Other Protocol (HTTP POST)",
-			input:     []byte("POST /api/data HTTP/1.1\r\nHost: example.com\r\nContent-Length: 10\r\n\r\n1234567890"),
-			wantMatch: false,
-		},
-		{
-			name:      "Other Protocol (SSH)",
-			input:     []byte("SSH-2.0-OpenSSH_8.2p1 Ubuntu-4ubuntu0.5\r\n"),
-			wantMatch: false,
-		},
-		{
-			name:      "Other Protocol (MySQL)",
-			input:     []byte{10, 0, 0, 0, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, // MySQL handshake
-			wantMatch: false,
-		},
-		{
-			name:      "Other Protocol (TLS ClientHello)",
-			input:     []byte{0x16, 0x03, 0x01, 0x00, 0xfc, 0x01, 0x00, 0x00, 0xf8, 0x03, 0x03}, // TLS 1.0 ClientHello start
-			wantMatch: false,
-		},
-		{
-			name:      "Other Protocol (Random Bytes)",
-			input:     []byte{0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE},
-			wantMatch: false,
-		},
-		{
-			name:      "Other Protocol (All Zeros)",
-			input:     bytes.Repeat([]byte{0x00}, 20),
+			name:      "OR logic: tls required (fails user check)",
+			matcher:   &MatchPostgres{User: map[string][]string{"alice": {"planets_db"}}},
+			input:     buildSSLRequest(),
 			wantMatch: false,
 		},
 	}
@@ -355,32 +269,16 @@ func TestMatchPostgres(t *testing.T) {
 	_, cancel := caddy.NewContext(caddy.Context{Context: context.Background()})
 	defer cancel()
 
-	for i, tc := range tests {
+	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			m := &MatchPostgres{}
-
-			in, out := net.Pipe()
-			defer func() {
-				_, _ = io.Copy(io.Discard, out)
-				_ = out.Close()
-			}()
-
-			cx := layer4.WrapConnection(out, []byte{}, zap.NewNop())
-
-			go func() {
-				_, err := in.Write(tc.input)
-				assertNoError(t, err)
-				_ = in.Close()
-			}()
-
-			matched, err := m.Match(cx)
+			matched, err := matchTester(t, tc.matcher, tc.input)
 			assertNoError(t, err)
 
 			if matched != tc.wantMatch {
 				if tc.wantMatch {
-					t.Fatalf("test %d: matcher did not match | %s\n", i, tc.name)
+					t.Fatalf("matcher did not match | %s\n", tc.name)
 				} else {
-					t.Fatalf("test %d: matcher should not match | %s\n", i, tc.name)
+					t.Fatalf("matcher should not have matched | %s\n", tc.name)
 				}
 			}
 		})
