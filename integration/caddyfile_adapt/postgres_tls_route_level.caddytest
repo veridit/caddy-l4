@@ -1,0 +1,42 @@
+{
+	layer4 {
+		:5432 {
+			route {
+				tls {
+					connection_policy {
+					}
+				}
+				echo
+			}
+		}
+	}
+}
+----------
+{
+	"apps": {
+		"layer4": {
+			"servers": {
+				"srv0": {
+					"listen": [
+						":5432"
+					],
+					"routes": [
+						{
+							"handle": [
+								{
+									"connection_policies": [
+										{}
+									],
+									"handler": "tls"
+								},
+								{
+									"handler": "echo"
+								}
+							]
+						}
+					]
+				}
+			}
+		}
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"github.com/caddyserver/caddy/v2/caddyconfig"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
+	"github.com/caddyserver/caddy/v2/modules/caddytls"
 )
 
 func init() {
@@ -30,17 +31,16 @@ func init() {
 //		}
 //	}
 func parseLayer4(d *caddyfile.Dispenser, existingVal any) (any, error) {
-	app := &App{Servers: make(map[string]*Server)}
+	l4App := &App{Servers: make(map[string]*Server)}
 
-	// Multiple global layer4 blocks are combined
 	if existingVal != nil {
 		appConfig, ok := existingVal.(httpcaddyfile.App)
 		if !ok {
-			return nil, d.Errf("existing %T config of unexpected type: %T", *app, existingVal)
+			return nil, d.Errf("existing layer4 app config of unexpected type: %T", existingVal)
 		}
-		err := json.Unmarshal(appConfig.Value, app)
+		err := json.Unmarshal(appConfig.Value, l4App)
 		if err != nil {
-			return nil, d.Errf("parsing existing %T config: %v", *app, err)
+			return nil, d.Errf("decoding existing layer4 app config: %v", err)
 		}
 	}
 
@@ -51,7 +51,7 @@ func parseLayer4(d *caddyfile.Dispenser, existingVal any) (any, error) {
 		return nil, d.ArgErr()
 	}
 
-	i := len(app.Servers)
+	i := len(l4App.Servers)
 	for nesting := d.Nesting(); d.NextBlock(nesting); {
 		server := &Server{}
 		var inst any = server
@@ -62,13 +62,13 @@ func parseLayer4(d *caddyfile.Dispenser, existingVal any) (any, error) {
 		if err := unm.UnmarshalCaddyfile(d); err != nil {
 			return nil, err
 		}
-		app.Servers["srv"+strconv.Itoa(i)] = server
+		l4App.Servers["srv"+strconv.Itoa(i)] = server
 		i++
 	}
 
 	return httpcaddyfile.App{
 		Name:  "layer4",
-		Value: caddyconfig.JSON(app, nil),
+		Value: caddyconfig.JSON(l4App, nil),
 	}, nil
 }
 
@@ -125,7 +125,7 @@ func ParseCaddyfileNestedRoutes(d *caddyfile.Dispenser, routes *RouteList, match
 
 		dd.Reset() // reset dispenser after argument/block checks above
 		dd.Next()  // consume wrapper name again
-		matcherSet, err := ParseCaddyfileNestedMatcherSet(dd)
+		matcherSet, err := ParseCaddyfileNestedMatcherSet(dd, make(map[string]ConnMatcher))
 		if err != nil {
 			return err
 		}
@@ -184,9 +184,7 @@ func ParseCaddyfileNestedHandlers(d *caddyfile.Dispenser, handlersRaw *[]json.Ra
 
 // ParseCaddyfileNestedMatcherSet parses the Caddyfile tokens for a nested matcher set,
 // and returns its raw module map value.
-func ParseCaddyfileNestedMatcherSet(d *caddyfile.Dispenser) (caddy.ModuleMap, error) {
-	matcherMap := make(map[string]ConnMatcher)
-
+func ParseCaddyfileNestedMatcherSet(d *caddyfile.Dispenser, matcherMap map[string]ConnMatcher) (caddy.ModuleMap, error) {
 	tokensByMatcherName := make(map[string][]caddyfile.Token)
 	for nesting := d.Nesting(); d.NextArg() || d.NextBlock(nesting); {
 		matcherName := d.Val()
@@ -244,4 +242,42 @@ func SetModuleNameInline(moduleNameKey, moduleName string, raw json.RawMessage) 
 	}
 
 	return result, nil
+}
+
+// ParseCaddyfileNestedTLSMatcherSet parses the Caddyfile tokens for a nested
+// TLS handshake matcher set, and returns its raw module map value.
+func ParseCaddyfileNestedTLSMatcherSet(d *caddyfile.Dispenser) (caddy.ModuleMap, error) {
+	matcherMap := make(map[string]caddytls.ConnectionMatcher)
+
+	tokensByMatcherName := make(map[string][]caddyfile.Token)
+	for nesting := d.Nesting(); d.NextArg() || d.NextBlock(nesting); {
+		matcherName := d.Val()
+		tokensByMatcherName[matcherName] = append(tokensByMatcherName[matcherName], d.NextSegment()...)
+	}
+
+	for matcherName, tokens := range tokensByMatcherName {
+		dd := caddyfile.NewDispenser(tokens)
+		dd.Next() // consume wrapper name
+
+		unm, err := caddyfile.UnmarshalModule(dd, "tls.handshake_match."+matcherName)
+		if err != nil {
+			return nil, err
+		}
+		cm, ok := unm.(caddytls.ConnectionMatcher)
+		if !ok {
+			return nil, fmt.Errorf("matcher module '%s' is not a connection matcher", matcherName)
+		}
+		matcherMap[matcherName] = cm
+	}
+
+	matcherSet := make(caddy.ModuleMap)
+	for name, matcher := range matcherMap {
+		jsonBytes, err := json.Marshal(matcher)
+		if err != nil {
+			return nil, fmt.Errorf("marshaling %T matcher: %v", matcher, err)
+		}
+		matcherSet[name] = jsonBytes
+	}
+
+	return matcherSet, nil
 }

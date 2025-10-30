@@ -15,6 +15,7 @@
 package l4tls
 
 import (
+	"context"
 	"crypto/tls"
 	"slices"
 
@@ -38,12 +39,25 @@ func (*MatchALPN) CaddyModule() caddy.ModuleInfo {
 }
 
 func (m *MatchALPN) Match(hello *tls.ClientHelloInfo) bool {
-	repl := caddy.NewReplacer()
-	if ctx := hello.Context(); ctx != nil {
-		// In some situations the existing context may have no replacer
+	var repl *caddy.Replacer
+	var ctx context.Context
+
+	// Prioritize getting the context from our custom connection type, which is
+	// guaranteed to have the replacer. Fall back to the standard (but likely
+	// empty) context otherwise.
+	if mayHaveContext, ok := hello.Conn.(interface{ GetContext() context.Context }); ok {
+		ctx = mayHaveContext.GetContext()
+	} else {
+		ctx = hello.Context()
+	}
+
+	if ctx != nil {
 		if replAny := ctx.Value(caddy.ReplacerCtxKey); replAny != nil {
 			repl = replAny.(*caddy.Replacer)
 		}
+	}
+	if repl == nil {
+		repl = caddy.NewReplacer()
 	}
 
 	clientProtocols := hello.SupportedProtos

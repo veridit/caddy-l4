@@ -1,0 +1,56 @@
+{
+	layer4 {
+		:5432 {
+			route {
+				tls {
+					connection_policy {
+						alpn postgresql
+					}
+					connection_policy {
+						alpn h2 http/1.1
+					}
+				}
+				echo
+			}
+		}
+	}
+}
+----------
+{
+	"apps": {
+		"layer4": {
+			"servers": {
+				"srv0": {
+					"listen": [
+						":5432"
+					],
+					"routes": [
+						{
+							"handle": [
+								{
+									"connection_policies": [
+										{
+											"alpn": [
+												"postgresql"
+											]
+										},
+										{
+											"alpn": [
+												"h2",
+												"http/1.1"
+											]
+										}
+									],
+									"handler": "tls"
+								},
+								{
+									"handler": "echo"
+								}
+							]
+						}
+					]
+				}
+			}
+		}
+	}
+}

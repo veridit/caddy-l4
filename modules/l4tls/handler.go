@@ -34,6 +34,9 @@ func init() {
 type Handler struct {
 	ConnectionPolicies caddytls.ConnectionPolicies `json:"connection_policies,omitempty"`
 
+	// unexported fields for Caddyfile parsing
+	automationSubjects []string
+
 	ctx    caddy.Context
 	logger *zap.Logger
 }
@@ -51,9 +54,14 @@ func (t *Handler) Provision(ctx caddy.Context) error {
 	t.ctx = ctx
 	t.logger = ctx.Logger(t)
 
+	t.logger.Debug("provisioning TLS handler",
+		zap.Int("num_policies", len(t.ConnectionPolicies)),
+		zap.Strings("automation_subjects", t.automationSubjects))
+
 	// ensure there is at least one policy, which will act as default
 	if len(t.ConnectionPolicies) == 0 {
 		t.ConnectionPolicies = append(t.ConnectionPolicies, new(caddytls.ConnectionPolicy))
+		t.logger.Debug("created default connection policy")
 	}
 
 	err := t.ConnectionPolicies.Provision(ctx)
@@ -61,19 +69,31 @@ func (t *Handler) Provision(ctx caddy.Context) error {
 		return fmt.Errorf("setting up Handler connection policies: %v", err)
 	}
 
+	t.logger.Debug("TLS handler provisioned successfully")
 	return nil
 }
 
 // Handle handles the connections.
 func (t *Handler) Handle(cx *layer4.Connection, next layer4.Handler) error {
+	t.logger.Debug("TLS handler invoked",
+		zap.String("remote", cx.RemoteAddr().String()),
+		zap.String("local", cx.LocalAddr().String()))
+
 	// get the TLS config to use for this connection
 	tlsCfg := t.ConnectionPolicies.TLSConfig(t.ctx)
+
+	t.logger.Debug("got TLS config",
+		zap.Int("num_certificates", len(tlsCfg.Certificates)),
+		zap.Bool("has_get_certificate", tlsCfg.GetCertificate != nil))
 
 	// capture the ClientHello info when the handshake is performed
 	var clientHello ClientHelloInfo
 	underlyingGetConfigForClient := tlsCfg.GetConfigForClient
 	tlsCfg.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
 		clientHello.ClientHelloInfo = *hello
+		t.logger.Debug("received ClientHello",
+			zap.String("server_name", hello.ServerName),
+			zap.Strings("alpn", hello.SupportedProtos))
 		return underlyingGetConfigForClient(hello)
 	}
 
@@ -81,9 +101,13 @@ func (t *Handler) Handle(cx *layer4.Connection, next layer4.Handler) error {
 	// in cx, not cx.Conn; this is because we must read from the
 	// connection to perform the handshake, and cx might have some
 	// bytes already buffered need to be read first)
+	t.logger.Debug("starting TLS handshake")
 	tlsConn := tls.Server(cx, tlsCfg)
 	err := tlsConn.Handshake()
 	if err != nil {
+		t.logger.Error("TLS handshake failed",
+			zap.String("remote", cx.RemoteAddr().String()),
+			zap.Error(err))
 		return err
 	}
 	t.logger.Debug("terminated TLS",
@@ -108,43 +132,89 @@ func (t *Handler) Handle(cx *layer4.Connection, next layer4.Handler) error {
 
 // UnmarshalCaddyfile sets up the Handler from Caddyfile tokens. Syntax:
 //
+//	tls <domains...>|internal {
+//	    ...
+//	}
+//
 //	tls {
 //		connection_policy {
 //			...
 //		}
-//		connection_policy {
-//			...
-//		}
 //	}
-//	tls
 func (t *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
-	_, wrapper := d.Next(), d.Val() // consume wrapper name
+	d.Next() // consume wrapper name: tls
 
-	// No same-line options are supported
-	if d.CountRemainingArgs() > 0 {
-		return d.ArgErr()
+	// same-line options are shorthands for automation (e.g., "tls internal" or "tls example.com")
+	t.automationSubjects = d.RemainingArgs()
+	hasBlock := d.NextBlock(d.Nesting())
+
+	// if there are shorthands and a block, that's an error for server-level config
+	if len(t.automationSubjects) > 0 && hasBlock {
+		return d.Err("cannot combine automation shorthands (like 'internal' or domain names) with a configuration block; use the block without shorthands for advanced configuration")
 	}
 
-	for nesting := d.Nesting(); d.NextBlock(nesting); {
-		optionName := d.Val()
-		switch optionName {
-		case "connection_policy":
-			cp := &caddytls.ConnectionPolicy{}
-			if err := cp.UnmarshalCaddyfile(d.NewFromNextSegment()); err != nil {
-				return err
-			}
-			t.ConnectionPolicies = append(t.ConnectionPolicies, cp)
-		default:
-			return d.ArgErr()
+	// if there are only shorthands, we're done (common case for server-level: "tls internal")
+	if len(t.automationSubjects) > 0 && !hasBlock {
+		return nil
+	}
+
+	// if there are no shorthands and no block, we're done (also valid: just "tls" with default settings)
+	if !hasBlock {
+		return nil
+	}
+
+	// empty block is OK (just "tls { }")
+	if d.Val() == "" {
+		return nil
+	}
+
+	// The block must contain one or more `connection_policy` blocks for advanced configuration.
+	// This is used when the tls handler is in a route (not at server-level).
+	if d.Val() != "connection_policy" {
+		return d.Errf("tls block must contain 'connection_policy' subdirectives; for simple configuration at the server level, use shorthands like 'tls internal' or 'tls example.com' instead")
+	}
+
+	// Multi-policy mode: parse one or more connection_policy blocks
+	t.ConnectionPolicies = nil // clear the default policy
+
+	for {
+		// the dispenser is on a `connection_policy` directive
+		if d.Val() != "connection_policy" {
+			return d.Err("all directives in this block must be connection_policy if the first one is")
 		}
 
-		// No nested blocks are supported
-		if d.NextBlock(nesting + 1) {
-			return d.Errf("malformed %s option '%s': blocks are not supported", wrapper, optionName)
+		cp := new(caddytls.ConnectionPolicy)
+
+		// UnmarshalCaddyfile for ConnectionPolicy might be greedy, so to be safe,
+		// we give it a dispenser that is scoped to just this segment.
+		// d.NewFromNextSegment() gets the whole segment (directive + block)
+		// and advances the main dispenser past it.
+		d2 := d.NewFromNextSegment()
+		if err := cp.UnmarshalCaddyfile(d2); err != nil {
+			return err
+		}
+		t.ConnectionPolicies = append(t.ConnectionPolicies, cp)
+
+		// see if there is another directive
+		if !d.Next() {
+			break
+		}
+
+		// if we are at the closing brace of the outer `tls` block, we are done
+		if d.Val() == "}" {
+			d.Prev()
+			break
 		}
 	}
 
 	return nil
+}
+
+// AutomationSubjects returns the subjects for which automation was requested
+// via a Caddyfile shorthand. This is used by the Caddyfile parser to
+// configure the main TLS app.
+func (t *Handler) AutomationSubjects() []string {
+	return t.automationSubjects
 }
 
 func appendClientHello(cx *layer4.Connection, chi ClientHelloInfo) {
@@ -185,7 +255,8 @@ func GetConnectionStates(cx *layer4.Connection) []*tls.ConnectionState {
 
 // Interface guards
 var (
-	_ caddy.Provisioner     = (*Handler)(nil)
-	_ caddyfile.Unmarshaler = (*Handler)(nil)
-	_ layer4.NextHandler    = (*Handler)(nil)
+	_ caddy.Provisioner                 = (*Handler)(nil)
+	_ caddyfile.Unmarshaler             = (*Handler)(nil)
+	_ layer4.NextHandler                = (*Handler)(nil)
+	_ layer4.AutomationSubjectsProvider = (*Handler)(nil)
 )

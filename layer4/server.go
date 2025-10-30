@@ -35,6 +35,12 @@ const (
 	MatchingTimeoutDefault = 3 * time.Second
 )
 
+// AutomationSubjectsProvider is an interface that TLS handlers can
+// implement to provide subject names for certificate automation.
+type AutomationSubjectsProvider interface {
+	AutomationSubjects() []string
+}
+
 // Server represents a Caddy layer4 server.
 type Server struct {
 	// The network address to bind to. Any Caddy network address
@@ -188,6 +194,11 @@ func (s *Server) handle(conn net.Conn) {
 	defer bufPool.Put(buf)
 
 	cx := WrapConnection(conn, buf, s.logger)
+
+	s.logger.Debug("handling connection",
+		zap.String("remote", cx.RemoteAddr().String()),
+		zap.String("local", cx.LocalAddr().String()),
+	)
 
 	start := time.Now()
 	err := s.compiledRoute.Handle(cx)
