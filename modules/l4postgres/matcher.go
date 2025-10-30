@@ -12,9 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package l4postgres allows the L4 multiplexing of Postgres connections.
-// SSL connections can be required.
-// Non-SSL connections can also match on Message parameters.
+// Package l4postgres allows the L4 multiplexing of Postgres connections by
+// matching on parameters from the startup message.
+//
+// To match TLS-encrypted connections, use the 'tls' matcher before this one,
+// and terminate TLS with the 'tls' handler. This matcher can then inspect
+// the decrypted stream.
 //
 // All conditions within a single matcher instance are combined with AND logic.
 // To achieve OR logic, define multiple named matchers and use them in separate
@@ -32,8 +35,7 @@
 //				"*": ["public_db"],
 //				"alice": ["planets_db", "stars_db"]
 //			},
-//			"client": ["psql", "TablePlus"],
-//			"tls": "required"
+//			"client": ["psql", "TablePlus"]
 //		}
 //	}
 
@@ -72,7 +74,6 @@ func init() {
 type MatchPostgres struct {
 	User   map[string][]string `json:"user,omitempty"`
 	Client []string            `json:"client,omitempty"`
-	TLS    string              `json:"tls,omitempty"`
 }
 
 // CaddyModule returns the Caddy module information.
@@ -119,19 +120,9 @@ func (m *MatchPostgres) Match(cx *layer4.Connection) (bool, error) {
 	code := binary.BigEndian.Uint32(payload[:4])
 
 	if code == SSLRequestCode {
-		if m.TLS == "disabled" {
-			return false, nil // TLS disabled, but got SSLRequest
-		}
-		if m.TLS == "required" {
-			return len(payload) == 4, nil // TLS required, and got valid SSLRequest
-		}
-		// TLS allowed: match only if no other filters, since SSLRequest has no user/client info
-		return len(m.User) == 0 && len(m.Client) == 0 && len(payload) == 4, nil
-	}
-
-	// Not an SSLRequest...
-	if m.TLS == "required" {
-		return false, nil // TLS required, but got something else
+		// This is an SSLRequest, not a StartupMessage. Don't match.
+		// The 'tls' matcher should be used for this.
+		return false, nil
 	}
 
 	if code == CancelRequestCode {
@@ -204,11 +195,6 @@ func (m *MatchPostgres) Match(cx *layer4.Connection) (bool, error) {
 }
 
 func (m *MatchPostgres) Provision(ctx caddy.Context) error {
-	switch m.TLS {
-	case "", "required", "allowed", "disabled":
-	default:
-		return fmt.Errorf("invalid tls value '%s'; must be one of 'required', 'allowed', 'disabled'", m.TLS)
-	}
 	return nil
 }
 
@@ -243,17 +229,6 @@ func (m *MatchPostgres) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			m.Client = append(m.Client, d.RemainingArgs()...)
 			if d.NextBlock(nesting + 1) {
 				return d.Err("`client` subdirective does not take a block")
-			}
-		case "tls":
-			if !d.NextArg() {
-				return d.Err("`tls` subdirective requires an argument")
-			}
-			m.TLS = d.Val()
-			if d.NextArg() {
-				return d.Err("`tls` subdirective takes only one argument")
-			}
-			if d.NextBlock(nesting + 1) {
-				return d.Err("`tls` subdirective does not take a block")
 			}
 		default:
 			return d.Errf("unrecognized subdirective '%s'", d.Val())

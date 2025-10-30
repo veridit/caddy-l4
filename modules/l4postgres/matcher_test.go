@@ -105,10 +105,10 @@ func TestMatchPostgres(t *testing.T) {
 	}{
 		// Basic protocol validation
 		{
-			name:      "Valid SSLRequest",
+			name:      "SSLRequest does not match",
 			matcher:   &MatchPostgres{},
 			input:     buildSSLRequest(),
-			wantMatch: true,
+			wantMatch: false,
 		},
 		{
 			name:      "Valid CancelRequest",
@@ -153,31 +153,6 @@ func TestMatchPostgres(t *testing.T) {
 			wantMatch: false,
 		},
 
-		// TLS Tests
-		{
-			name:      "TLS required with SSLRequest",
-			matcher:   &MatchPostgres{TLS: "required"},
-			input:     buildSSLRequest(),
-			wantMatch: true,
-		},
-		{
-			name:      "TLS required with StartupMessage",
-			matcher:   &MatchPostgres{TLS: "required"},
-			input:     buildStartupMessage(ProtocolVersion3, nil),
-			wantMatch: false,
-		},
-		{
-			name:      "TLS disabled with SSLRequest",
-			matcher:   &MatchPostgres{TLS: "disabled"},
-			input:     buildSSLRequest(),
-			wantMatch: false,
-		},
-		{
-			name:      "TLS allowed with SSLRequest and user filter",
-			matcher:   &MatchPostgres{TLS: "", User: map[string][]string{"alice": {}}},
-			input:     buildSSLRequest(),
-			wantMatch: false,
-		},
 
 		// User/DB Tests
 		{
@@ -239,31 +214,6 @@ func TestMatchPostgres(t *testing.T) {
 			wantMatch: false,
 		},
 
-		// OR Logic Simulation
-		{
-			name:      "OR logic: user alice on planets_db (matches)",
-			matcher:   &MatchPostgres{User: map[string][]string{"alice": {"planets_db"}}},
-			input:     buildStartupMessage(ProtocolVersion3, map[string]string{"user": "alice", "database": "planets_db"}),
-			wantMatch: true,
-		},
-		{
-			name:      "OR logic: tls required (matches)",
-			matcher:   &MatchPostgres{TLS: "required"},
-			input:     buildSSLRequest(),
-			wantMatch: true,
-		},
-		{
-			name:      "OR logic: user alice on planets_db (fails tls required check)",
-			matcher:   &MatchPostgres{TLS: "required"},
-			input:     buildStartupMessage(ProtocolVersion3, map[string]string{"user": "alice", "database": "planets_db"}),
-			wantMatch: false,
-		},
-		{
-			name:      "OR logic: tls required (fails user check)",
-			matcher:   &MatchPostgres{User: map[string][]string{"alice": {"planets_db"}}},
-			input:     buildSSLRequest(),
-			wantMatch: false,
-		},
 	}
 
 	_, cancel := caddy.NewContext(caddy.Context{Context: context.Background()})

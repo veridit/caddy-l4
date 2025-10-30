@@ -73,7 +73,6 @@
 					* public_db
 				}
 				client psql TablePlus
-				tls required
 			}
 			route @pg {
 				proxy postgres.main:5432
@@ -109,69 +108,6 @@
 										"client": [
 											"psql",
 											"TablePlus"
-										],
-										"tls": "required"
-									}
-								}
-							],
-							"handle": [
-								{
-									"handler": "proxy",
-									"upstreams": [
-										{
-											"dial": [
-												"postgres.main:5432"
-											]
-										}
-									]
-								}
-							]
-						}
-					]
-				}
-			}
-		}
-	}
-}
-
-----------
-
-{
-	layer4 {
-		:5432 {
-			@pg_and_tls {
-				postgres {
-					tls required
-				}
-				tls sni dev.statbus.org
-			}
-			route @pg_and_tls {
-				proxy postgres.main:5432
-			}
-		}
-	}
-}
-----------
-{
-	"apps": {
-		"layer4": {
-			"servers": {
-				"srv0": {
-					"listen": [
-						":5432"
-					],
-					"routes": [
-						{
-							"match": [
-								{
-									"postgres": {
-										"tls": "required"
-									}
-								},
-								{
-									"tls": {
-										"sni": [
-											"dev.statbus.org"
 										]
 									}
 								}
@@ -195,3 +131,4 @@
 		}
 	}
 }
+

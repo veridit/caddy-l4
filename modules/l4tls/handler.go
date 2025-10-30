@@ -108,7 +108,7 @@ func (t *Handler) Handle(cx *layer4.Connection, next layer4.Handler) error {
 
 // UnmarshalCaddyfile sets up the Handler from Caddyfile tokens. Syntax:
 //
-//	tls {
+//	tls [<alpn_protos...>] {
 //		connection_policy {
 //			...
 //		}
@@ -116,32 +116,42 @@ func (t *Handler) Handle(cx *layer4.Connection, next layer4.Handler) error {
 //			...
 //		}
 //	}
-//	tls
+//	tls [<alpn_protos...>]
 func (t *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
-	_, wrapper := d.Next(), d.Val() // consume wrapper name
+	d.Next() // consume wrapper name
 
-	// No same-line options are supported
-	if d.CountRemainingArgs() > 0 {
-		return d.ArgErr()
+	alpnProtos := d.RemainingArgs()
+
+	// The test dispenser may give us "{}" as a single token, which
+	// represents an empty block. This handles that case.
+	if len(alpnProtos) > 0 && alpnProtos[len(alpnProtos)-1] == "{}" {
+		alpnProtos = alpnProtos[:len(alpnProtos)-1]
+	} else {
+		for nesting := d.Nesting(); d.NextBlock(nesting); {
+			optionName := d.Val()
+			switch optionName {
+			case "connection_policy":
+				cp := &caddytls.ConnectionPolicy{}
+				if err := cp.UnmarshalCaddyfile(d.NewFromNextSegment()); err != nil {
+					return err
+				}
+				t.ConnectionPolicies = append(t.ConnectionPolicies, cp)
+			default:
+				return d.Errf("unrecognized subdirective '%s'", optionName)
+			}
+		}
 	}
 
-	for nesting := d.Nesting(); d.NextBlock(nesting); {
-		optionName := d.Val()
-		switch optionName {
-		case "connection_policy":
-			cp := &caddytls.ConnectionPolicy{}
-			if err := cp.UnmarshalCaddyfile(d.NewFromNextSegment()); err != nil {
-				return err
-			}
-			t.ConnectionPolicies = append(t.ConnectionPolicies, cp)
-		default:
-			return d.ArgErr()
-		}
+	if len(alpnProtos) > 0 {
+		// The inline ALPN protocols form a default policy that is appended
+		// to the list, so it acts as a fallback.
+		defaultPolicy := &caddytls.ConnectionPolicy{ALPN: alpnProtos}
+		t.ConnectionPolicies = append(t.ConnectionPolicies, defaultPolicy)
+	}
 
-		// No nested blocks are supported
-		if d.NextBlock(nesting + 1) {
-			return d.Errf("malformed %s option '%s': blocks are not supported", wrapper, optionName)
-		}
+	// if no policies were configured, add a default one
+	if len(t.ConnectionPolicies) == 0 {
+		t.ConnectionPolicies = append(t.ConnectionPolicies, new(caddytls.ConnectionPolicy))
 	}
 
 	return nil
