@@ -216,11 +216,11 @@ func (m *MatchPostgres) Provision(ctx caddy.Context) error {
 func (m *MatchPostgres) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	d.Next() // consume wrapper name
 
-	if d.NextArg() {
+	if d.CountRemainingArgs() > 0 {
 		return d.ArgErr()
 	}
 
-	for d.NextBlock(0) {
+	for nesting := d.Nesting(); d.NextBlock(nesting); {
 		switch d.Val() {
 		case "user":
 			if d.NextArg() {
@@ -229,7 +229,7 @@ func (m *MatchPostgres) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			if m.User == nil {
 				m.User = make(map[string][]string)
 			}
-			for d.NextBlock(1) { // open `user { ... }` block
+			for d.NextBlock(nesting + 1) { // open `user { ... }` block
 				for d.Next() { // iterate through lines
 					user := d.Val()
 					databases := d.RemainingArgs()
@@ -241,7 +241,7 @@ func (m *MatchPostgres) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			}
 		case "client":
 			m.Client = append(m.Client, d.RemainingArgs()...)
-			if d.NextBlock(1) {
+			if d.NextBlock(nesting + 1) {
 				return d.Err("`client` subdirective does not take a block")
 			}
 		case "tls":
@@ -252,7 +252,7 @@ func (m *MatchPostgres) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			if d.NextArg() {
 				return d.Err("`tls` subdirective takes only one argument")
 			}
-			if d.NextBlock(1) {
+			if d.NextBlock(nesting + 1) {
 				return d.Err("`tls` subdirective does not take a block")
 			}
 		default:
