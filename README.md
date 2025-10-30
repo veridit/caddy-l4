@@ -76,6 +76,7 @@ Alternatively, to hack on the plugin code, you can clone it down, then build and
 
 1. Download or clone this repo: `git clone https://github.com/mholt/caddy-l4.git`
 2. In the project folder, run `xcaddy` just like you would run `caddy`. For example: `xcaddy list-modules --versions` (you should see the `layer4` modules).
+3. Run all tests with `go test -v ./...`, and a specific test for a specific moduel with say  `go test -v ./modules/l4postgres`
 
 
 ## Writing config
