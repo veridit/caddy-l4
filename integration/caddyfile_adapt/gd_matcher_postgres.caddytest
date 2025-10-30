@@ -60,3 +60,76 @@
 		}
 	}
 }
+
+----------
+
+{
+	layer4 {
+		:5432 {
+			@pg postgres {
+				user {
+					alice stars_db
+					bob planets_db
+					* public_db
+				}
+				client psql TablePlus
+				tls required
+			}
+			route @pg {
+				proxy postgres.main:5432
+			}
+		}
+	}
+}
+----------
+{
+	"apps": {
+		"layer4": {
+			"servers": {
+				"srv0": {
+					"listen": [
+						":5432"
+					],
+					"routes": [
+						{
+							"match": [
+								{
+									"postgres": {
+										"user": {
+											"alice": [
+												"stars_db"
+											],
+											"bob": [
+												"planets_db"
+											],
+											"*": [
+												"public_db"
+											]
+										},
+										"client": [
+											"psql",
+											"TablePlus"
+										],
+										"tls": "required"
+									}
+								}
+							],
+							"handle": [
+								{
+									"handler": "proxy",
+									"upstreams": [
+										{
+											"dial": [
+												"postgres.main:5432"
+											]
+										}
+									]
+								}
+							]
+						}
+					]
+				}
+			}
+		}
+	}
+}
