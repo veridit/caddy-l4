@@ -49,6 +49,7 @@ import (
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
+	"go.uber.org/zap"
 
 	"github.com/mholt/caddy-l4/layer4"
 )
@@ -73,6 +74,8 @@ type MatchPostgres struct {
 	User   map[string][]string `json:"user,omitempty"`
 	Client []string            `json:"client,omitempty"`
 	TLS    string              `json:"tls,omitempty"`
+
+	logger *zap.Logger `json:"-"`
 }
 
 // CaddyModule returns the Caddy module information.
@@ -85,6 +88,7 @@ func (*MatchPostgres) CaddyModule() caddy.ModuleInfo {
 
 // Match returns true if the connection looks like the Postgres protocol.
 func (m *MatchPostgres) Match(cx *layer4.Connection) (bool, error) {
+	m.logger.Debug("matching connection")
 	// Read first byte to check for TLS handshake
 	initialByte := make([]byte, 1)
 	// Use ReadFull to ensure we get 1 byte unless EOF.
@@ -104,7 +108,9 @@ func (m *MatchPostgres) Match(cx *layer4.Connection) (bool, error) {
 }
 
 func (m *MatchPostgres) matchTLS(cx *layer4.Connection, initialByte []byte) (bool, error) {
+	m.logger.Debug("postgres connection appears to be TLS")
 	if m.TLS == "disabled" {
+		m.logger.Debug("tls is disabled, not matching")
 		return false, nil
 	}
 
@@ -140,20 +146,26 @@ func (m *MatchPostgres) matchTLS(cx *layer4.Connection, initialByte []byte) (boo
 
 	chi := parseRawClientHello(rawHello)
 
+	m.logger.Debug("parsed client hello", zap.Strings("alpn_protos", chi.SupportedProtos))
+
 	hasPostgresALPN := slices.Contains(chi.SupportedProtos, "postgresql")
 
 	if m.TLS == "required" {
+		m.logger.Debug("tls is required, matching based on ALPN", zap.Bool("matched", hasPostgresALPN))
 		return hasPostgresALPN, nil
 	}
 
 	if len(m.User) > 0 || len(m.Client) > 0 {
+		m.logger.Debug("not matching because user/client filters are set for TLS-negotiated session")
 		return false, nil
 	}
 
+	m.logger.Debug("tls is allowed, matching based on ALPN", zap.Bool("matched", hasPostgresALPN))
 	return hasPostgresALPN, nil
 }
 
 func (m *MatchPostgres) matchStartup(cx *layer4.Connection, initialByte []byte) (bool, error) {
+	m.logger.Debug("postgres connection appears to be a startup message")
 	// Read message length (first 4 bytes)
 	lenBytes := make([]byte, lengthFieldSize)
 	copy(lenBytes, initialByte)
@@ -167,12 +179,14 @@ func (m *MatchPostgres) matchStartup(cx *layer4.Connection, initialByte []byte) 
 	// Parse and validate message length
 	msgLen := binary.BigEndian.Uint32(lenBytes)
 	if msgLen < minMessageLen {
+		m.logger.Debug("not matching, message too short", zap.Uint32("len", msgLen))
 		return false, nil // Too small to be a valid PostgreSQL message
 	}
 
 	// Calculate and validate payload length
 	payloadLen := msgLen - lengthFieldSize
 	if payloadLen > maxPayloadSize || payloadLen < 4 {
+		m.logger.Debug("not matching, invalid payload length", zap.Uint32("len", payloadLen))
 		return false, nil // Payload too large, reject to prevent DoS
 	}
 
@@ -190,33 +204,43 @@ func (m *MatchPostgres) matchStartup(cx *layer4.Connection, initialByte []byte) 
 
 	if code == SSLRequestCode {
 		if m.TLS == "disabled" {
+			m.logger.Debug("not matching, got sslrequest while tls is disabled")
 			return false, nil // TLS disabled, but got SSLRequest
 		}
 		if m.TLS == "required" {
-			return len(payload) == 4, nil // TLS required, and got valid SSLRequest
+			matched := len(payload) == 4
+			m.logger.Debug("matching sslrequest, tls is required", zap.Bool("matched", matched))
+			return matched, nil // TLS required, and got valid SSLRequest
 		}
 		// TLS allowed: match only if no other filters, since SSLRequest has no user/client info
-		return len(m.User) == 0 && len(m.Client) == 0 && len(payload) == 4, nil
+		matched := len(m.User) == 0 && len(m.Client) == 0 && len(payload) == 4
+		m.logger.Debug("matching sslrequest, tls is allowed", zap.Bool("matched", matched))
+		return matched, nil
 	}
 
 	// Not an SSLRequest...
 	if m.TLS == "required" {
+		m.logger.Debug("not matching, tls is required but did not get sslrequest")
 		return false, nil // TLS required, but got something else
 	}
 
 	if code == CancelRequestCode {
 		// CancelRequest has no user/client info. Match only if no filters are configured.
-		return len(m.User) == 0 && len(m.Client) == 0 && len(payload) == 12, nil
+		matched := len(m.User) == 0 && len(m.Client) == 0 && len(payload) == 12
+		m.logger.Debug("matching cancelrequest", zap.Bool("matched", matched))
+		return matched, nil
 	}
 
 	// From here, we assume it's a startup message. Check protocol version.
 	majorVersion := code >> 16
 	if majorVersion != 3 {
+		m.logger.Debug("not matching, unsupported major version", zap.Uint32("version", majorVersion))
 		return false, nil // Only support protocol version 3
 	}
 
 	params, ok := parseStartupParameters(payload[4:])
 	if !ok {
+		m.logger.Debug("not matching, malformed startup parameters")
 		return false, nil // Malformed startup message
 	}
 
@@ -270,10 +294,12 @@ func (m *MatchPostgres) matchStartup(cx *layer4.Connection, initialByte []byte) 
 	}
 
 	// If we haven't returned false yet, it's a match.
+	m.logger.Debug("matched startup message")
 	return true, nil
 }
 
 func (m *MatchPostgres) Provision(ctx caddy.Context) error {
+	m.logger = ctx.Logger(m)
 	switch m.TLS {
 	case "", "required", "allowed", "disabled":
 	default:
