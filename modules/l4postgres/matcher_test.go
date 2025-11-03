@@ -193,7 +193,7 @@ func TestMatchPostgres(t *testing.T) {
 			name:      "TLS required with SSLRequest",
 			matcher:   &MatchPostgres{TLS: "required"},
 			input:     buildSSLRequest(),
-			wantMatch: true,
+			wantMatch: false,
 		},
 		{
 			name:      "TLS required with StartupMessage",
@@ -285,7 +285,7 @@ func TestMatchPostgres(t *testing.T) {
 			name:      "OR logic: tls required (matches)",
 			matcher:   &MatchPostgres{TLS: "required"},
 			input:     buildSSLRequest(),
-			wantMatch: true,
+			wantMatch: false,
 		},
 		{
 			name:      "OR logic: user alice on planets_db (fails tls required check)",

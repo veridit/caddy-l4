@@ -166,6 +166,10 @@ func (m *MatchPostgres) matchTLS(cx *layer4.Connection, initialByte []byte) (boo
 
 func (m *MatchPostgres) matchStartup(cx *layer4.Connection, initialByte []byte) (bool, error) {
 	m.logger.Debug("postgres connection appears to be a startup message")
+	if m.TLS == "required" {
+		m.logger.Debug("not matching, tls is required but a startup message was received")
+		return false, nil
+	}
 	// Read message length (first 4 bytes)
 	lenBytes := make([]byte, lengthFieldSize)
 	copy(lenBytes, initialByte)
@@ -207,21 +211,10 @@ func (m *MatchPostgres) matchStartup(cx *layer4.Connection, initialByte []byte) 
 			m.logger.Debug("not matching, got sslrequest while tls is disabled")
 			return false, nil // TLS disabled, but got SSLRequest
 		}
-		if m.TLS == "required" {
-			matched := len(payload) == 4
-			m.logger.Debug("matching sslrequest, tls is required", zap.Bool("matched", matched))
-			return matched, nil // TLS required, and got valid SSLRequest
-		}
 		// TLS allowed: match only if no other filters, since SSLRequest has no user/client info
 		matched := len(m.User) == 0 && len(m.Client) == 0 && len(payload) == 4
 		m.logger.Debug("matching sslrequest, tls is allowed", zap.Bool("matched", matched))
 		return matched, nil
-	}
-
-	// Not an SSLRequest...
-	if m.TLS == "required" {
-		m.logger.Debug("not matching, tls is required but did not get sslrequest")
-		return false, nil // TLS required, but got something else
 	}
 
 	if code == CancelRequestCode {
