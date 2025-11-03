@@ -85,9 +85,79 @@ func (*MatchPostgres) CaddyModule() caddy.ModuleInfo {
 
 // Match returns true if the connection looks like the Postgres protocol.
 func (m *MatchPostgres) Match(cx *layer4.Connection) (bool, error) {
+	// Read first byte to check for TLS handshake
+	initialByte := make([]byte, 1)
+	// Use ReadFull to ensure we get 1 byte unless EOF.
+	if _, err := io.ReadFull(cx, initialByte); err != nil {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return false, nil
+		}
+		return false, fmt.Errorf("peeking for TLS handshake: %w", err)
+	}
+
+	const recordTypeHandshake = 0x16
+	if initialByte[0] == recordTypeHandshake {
+		return m.matchTLS(cx, initialByte)
+	}
+
+	return m.matchStartup(cx, initialByte)
+}
+
+func (m *MatchPostgres) matchTLS(cx *layer4.Connection, initialByte []byte) (bool, error) {
+	if m.TLS == "disabled" {
+		return false, nil
+	}
+
+	// The following logic is borrowed from l4tls.MatchTLS
+	const recordHeaderLen = 5
+	hdr := make([]byte, recordHeaderLen)
+	copy(hdr, initialByte)
+	_, err := io.ReadFull(cx, hdr[1:])
+	if err != nil {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return false, nil // Not enough data for a TLS handshake
+		}
+		return false, fmt.Errorf("reading TLS record header: %w", err)
+	}
+
+	const recordTypeHandshake = 0x16
+	if hdr[0] != recordTypeHandshake {
+		return false, nil // Should be caught by peek, but good to double-check
+	}
+
+	length := int(uint16(hdr[3])<<8 | uint16(hdr[4]))
+	if length > maxPayloadSize {
+		return false, nil
+	}
+	rawHello := make([]byte, length)
+	_, err = io.ReadFull(cx, rawHello)
+	if err != nil {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return false, nil
+		}
+		return false, fmt.Errorf("reading ClientHello: %w", err)
+	}
+
+	chi := parseRawClientHello(rawHello)
+
+	hasPostgresALPN := slices.Contains(chi.SupportedProtos, "postgresql")
+
+	if m.TLS == "required" {
+		return hasPostgresALPN, nil
+	}
+
+	if len(m.User) > 0 || len(m.Client) > 0 {
+		return false, nil
+	}
+
+	return hasPostgresALPN, nil
+}
+
+func (m *MatchPostgres) matchStartup(cx *layer4.Connection, initialByte []byte) (bool, error) {
 	// Read message length (first 4 bytes)
 	lenBytes := make([]byte, lengthFieldSize)
-	if _, err := io.ReadFull(cx, lenBytes); err != nil {
+	copy(lenBytes, initialByte)
+	if _, err := io.ReadFull(cx, lenBytes[1:]); err != nil {
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 			return false, nil // Not enough data for PostgreSQL
 		}

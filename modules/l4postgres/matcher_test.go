@@ -3,12 +3,14 @@ package l4postgres
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/binary"
 	"errors"
 	"io"
 	"net"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/mholt/caddy-l4/layer4"
@@ -94,6 +96,39 @@ func buildCancelRequest(pid, secretKey uint32) []byte {
 	binary.Write(&message, binary.BigEndian, pid)
 	binary.Write(&message, binary.BigEndian, secretKey)
 	return message.Bytes()
+}
+
+func buildClientHello(t *testing.T, alpn ...string) []byte {
+	client, server := net.Pipe()
+	var clientHello []byte
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	go func() {
+		defer wg.Done()
+		defer client.Close()
+		tlsClient := tls.Client(client, &tls.Config{
+			NextProtos:         alpn,
+			InsecureSkipVerify: true,
+			ServerName:         "test",
+		})
+		// Handshake will write client hello, then wait for server hello
+		// we don't send one, so it will time out or fail on pipe close
+		_ = tlsClient.Handshake()
+	}()
+
+	// The server side reads the client hello
+	buf := make([]byte, 4096)
+	// Set a deadline to avoid test hanging
+	_ = server.SetReadDeadline(time.Now().Add(1 * time.Second))
+	n, err := server.Read(buf)
+	if err != nil && err != io.EOF && !errors.Is(err, net.ErrClosed) {
+		t.Logf("server read failed: %v", err)
+	}
+	clientHello = buf[:n]
+	_ = server.Close()
+	wg.Wait()
+	return clientHello
 }
 
 func TestMatchPostgres(t *testing.T) {
@@ -262,6 +297,38 @@ func TestMatchPostgres(t *testing.T) {
 			name:      "OR logic: tls required (fails user check)",
 			matcher:   &MatchPostgres{User: map[string][]string{"alice": {"planets_db"}}},
 			input:     buildSSLRequest(),
+			wantMatch: false,
+		},
+
+		// TLS direct negotiation tests
+		{
+			name:      "TLS with postgresql alpn",
+			matcher:   &MatchPostgres{},
+			input:     buildClientHello(t, "postgresql"),
+			wantMatch: true,
+		},
+		{
+			name:      "TLS with postgresql alpn and tls required",
+			matcher:   &MatchPostgres{TLS: "required"},
+			input:     buildClientHello(t, "postgresql"),
+			wantMatch: true,
+		},
+		{
+			name:      "TLS with wrong alpn and tls required",
+			matcher:   &MatchPostgres{TLS: "required"},
+			input:     buildClientHello(t, "http/1.1"),
+			wantMatch: false,
+		},
+		{
+			name:      "TLS with postgresql alpn and tls disabled",
+			matcher:   &MatchPostgres{TLS: "disabled"},
+			input:     buildClientHello(t, "postgresql"),
+			wantMatch: false,
+		},
+		{
+			name:      "TLS with postgresql alpn and user filter",
+			matcher:   &MatchPostgres{User: map[string][]string{"alice": {}}},
+			input:     buildClientHello(t, "postgresql"),
 			wantMatch: false,
 		},
 	}
