@@ -91,40 +91,6 @@ func (*MatchPostgres) CaddyModule() caddy.ModuleInfo {
 
 // Match returns true if the connection looks like the Postgres protocol.
 func (m *MatchPostgres) Match(cx *layer4.Connection) (bool, error) {
-	if tlsConn, ok := cx.Conn.(*tls.Conn); ok {
-		m.logger.Debug("connection is already a TLS connection")
-		if m.TLS == "disabled" {
-			m.logger.Debug("not matching, tls is disabled")
-			return false, nil
-		}
-
-		state := tlsConn.ConnectionState()
-		m.logger.Debug("checking existing TLS connection state",
-			zap.String("negotiated_protocol", state.NegotiatedProtocol),
-			zap.String("server_name", state.ServerName))
-
-		if len(m.SNI) > 0 {
-			sniMatcher := caddytls.MatchServerName(m.SNI)
-			hello := &tls.ClientHelloInfo{ServerName: state.ServerName}
-			if !sniMatcher.Match(hello) {
-				m.logger.Debug("not matching, SNI mismatch for established TLS connection", zap.String("server_name", state.ServerName), zap.Strings("expected_sni", m.SNI))
-				return false, nil
-			}
-		}
-
-		hasPostgresALPN := state.NegotiatedProtocol == "postgresql"
-
-		if m.TLS == "required" {
-			m.logger.Debug("tls is required, matching based on ALPN", zap.Bool("matched", hasPostgresALPN))
-			return hasPostgresALPN, nil
-		}
-		if len(m.User) > 0 || len(m.Client) > 0 {
-			m.logger.Debug("not matching because user/client filters are set for TLS-negotiated session")
-			return false, nil
-		}
-		m.logger.Debug("tls is allowed, matching based on ALPN", zap.Bool("matched", hasPostgresALPN))
-		return hasPostgresALPN, nil
-	}
 
 	m.logger.Debug("matching connection")
 	// Read first byte to check for TLS handshake
