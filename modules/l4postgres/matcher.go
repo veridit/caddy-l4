@@ -91,8 +91,52 @@ func (*MatchPostgres) CaddyModule() caddy.ModuleInfo {
 
 // Match returns true if the connection looks like the Postgres protocol.
 func (m *MatchPostgres) Match(cx *layer4.Connection) (bool, error) {
+	if tlsConn, ok := cx.Conn.(*tls.Conn); ok {
+		return m.matchDecryptedTLS(cx, tlsConn)
+	}
+	return m.matchRaw(cx)
+}
 
-	m.logger.Debug("matching connection")
+func (m *MatchPostgres) matchDecryptedTLS(cx *layer4.Connection, tlsConn *tls.Conn) (bool, error) {
+	m.logger.Debug("matching connection that is already a TLS-terminated stream")
+
+	if m.TLS == "disabled" {
+		m.logger.Debug("not matching, tls is disabled but connection is TLS")
+		return false, nil
+	}
+
+	// ConnectionState() should not block here, as the listener wrapper
+	// is handed a connection after the handshake is complete.
+	state := tlsConn.ConnectionState()
+	m.logger.Debug("checking existing TLS connection state",
+		zap.String("server_name", state.ServerName))
+
+	if len(m.SNI) > 0 {
+		sniMatcher := caddytls.MatchServerName(m.SNI)
+		hello := &tls.ClientHelloInfo{ServerName: state.ServerName}
+		if !sniMatcher.Match(hello) {
+			m.logger.Debug("not matching, SNI mismatch for established TLS connection",
+				zap.String("server_name", state.ServerName),
+				zap.Strings("expected_sni", m.SNI))
+			return false, nil
+		}
+	}
+
+	// If we are here, TLS and SNI requirements are met.
+	// If there are no other filters, we have a match.
+	if len(m.User) == 0 && len(m.Client) == 0 {
+		m.logger.Debug("matched based on TLS connection and SNI (if configured)")
+		return true, nil
+	}
+
+	// If there are other filters, we must inspect the startup message
+	// which is now available decrypted on the connection.
+	m.logger.Debug("performing startup message match on decrypted stream")
+	return m.matchStartup(cx, nil)
+}
+
+func (m *MatchPostgres) matchRaw(cx *layer4.Connection) (bool, error) {
+	m.logger.Debug("matching raw connection")
 	// Read first byte to check for TLS handshake
 	initialByte := make([]byte, 1)
 	// Use ReadFull to ensure we get 1 byte unless EOF.
@@ -184,8 +228,13 @@ func (m *MatchPostgres) matchStartup(cx *layer4.Connection, initialByte []byte) 
 	}
 	// Read message length (first 4 bytes)
 	lenBytes := make([]byte, lengthFieldSize)
-	copy(lenBytes, initialByte)
-	if _, err := io.ReadFull(cx, lenBytes[1:]); err != nil {
+	var readStart int
+	if initialByte != nil {
+		copy(lenBytes, initialByte)
+		readStart = 1
+	}
+
+	if _, err := io.ReadFull(cx, lenBytes[readStart:]); err != nil {
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 			return false, nil // Not enough data for PostgreSQL
 		}

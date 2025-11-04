@@ -106,6 +106,81 @@ func matchTester(t *testing.T, matcher *MatchPostgres, input []byte) (bool, erro
 	return matched, err
 }
 
+func tlsMatchTester(t *testing.T, matcher *MatchPostgres, clientSNI string, startupMessage []byte) (bool, error) {
+	cert := generateTestCert(t)
+
+	serverConf := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+	}
+	clientConf := &tls.Config{
+		ServerName:         clientSNI,
+		InsecureSkipVerify: true,
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Failed to listen: %v", err)
+	}
+	defer ln.Close()
+
+	var serverConn net.Conn
+	var serverHandshakeErr error
+	serverDone := make(chan struct{})
+
+	go func() {
+		defer close(serverDone)
+		conn, err := ln.Accept()
+		if err != nil {
+			serverHandshakeErr = err
+			return
+		}
+		defer conn.Close()
+		s := tls.Server(conn, serverConf)
+		// Handshake will block until client sends close_notify or an error occurs.
+		err = s.Handshake()
+		if err != nil {
+			// A clean EOF from client closing pipe is not an error here.
+			if !errors.Is(err, io.EOF) {
+				serverHandshakeErr = err
+			}
+		}
+		serverConn = s
+	}()
+
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("Failed to dial: %v", err)
+	}
+	defer conn.Close()
+
+	c := tls.Client(conn, clientConf)
+	err = c.Handshake()
+	if err != nil {
+		t.Fatalf("Client handshake error: %v", err)
+	}
+
+	if len(startupMessage) > 0 {
+		_, err = c.Write(startupMessage)
+		if err != nil {
+			t.Fatalf("Client write error: %v", err)
+		}
+	}
+	// This sends close_notify and unblocks the server handshake.
+	c.Close()
+
+	<-serverDone
+
+	if serverHandshakeErr != nil {
+		t.Fatalf("Server handshake error: %v", serverHandshakeErr)
+	}
+	if serverConn == nil {
+		return false, errors.New("server connection is nil after handshake")
+	}
+
+	cx := layer4.WrapConnection(serverConn, []byte{}, zap.NewNop())
+	return matcher.Match(cx)
+}
+
 
 func buildStartupMessage(version uint32, params map[string]string) []byte {
 	var payload bytes.Buffer
@@ -411,6 +486,75 @@ func TestMatchPostgres(t *testing.T) {
 			}
 
 			matched, err := matchTester(t, tc.matcher, tc.input)
+			assertNoError(t, err)
+
+			if matched != tc.wantMatch {
+				if tc.wantMatch {
+					t.Fatalf("matcher did not match | %s\n", tc.name)
+				} else {
+					t.Fatalf("matcher should not have matched | %s\n", tc.name)
+				}
+			}
+		})
+	}
+
+	// Tests for already-established TLS connections (listener_wrapper scenario)
+	tlsTests := []struct {
+		name           string
+		matcher        *MatchPostgres
+		clientSNI      string
+		startupMessage []byte
+		wantMatch      bool
+	}{
+		{
+			name:      "Pre-TLS SNI match",
+			matcher:   &MatchPostgres{TLS: "required", SNI: []string{"dev.test.com"}},
+			clientSNI: "dev.test.com",
+			wantMatch: true,
+		},
+		{
+			name:      "Pre-TLS SNI mismatch",
+			matcher:   &MatchPostgres{TLS: "required", SNI: []string{"another.com"}},
+			clientSNI: "dev.test.com",
+			wantMatch: false,
+		},
+		{
+			name:      "Pre-TLS SNI wildcard match",
+			matcher:   &MatchPostgres{TLS: "required", SNI: []string{"*.wild.com"}},
+			clientSNI: "sub.wild.com",
+			wantMatch: true,
+		},
+		{
+			name:           "Pre-TLS with user filter match",
+			matcher:        &MatchPostgres{TLS: "allowed", User: map[string][]string{"alice": {}}},
+			clientSNI:      "dev.test.com",
+			startupMessage: buildStartupMessage(ProtocolVersion3, map[string]string{"user": "alice"}),
+			wantMatch:      true,
+		},
+		{
+			name:           "Pre-TLS with user filter mismatch",
+			matcher:        &MatchPostgres{TLS: "allowed", User: map[string][]string{"alice": {}}},
+			clientSNI:      "dev.test.com",
+			startupMessage: buildStartupMessage(ProtocolVersion3, map[string]string{"user": "bob"}),
+			wantMatch:      false,
+		},
+		{
+			name:      "Pre-TLS disabled mismatch",
+			matcher:   &MatchPostgres{TLS: "disabled"},
+			clientSNI: "dev.test.com",
+			wantMatch: false,
+		},
+	}
+	for _, tc := range tlsTests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := caddy.NewContext(caddy.Context{Context: context.Background()})
+			defer cancel()
+			err := tc.matcher.Provision(ctx)
+			if err != nil {
+				t.Fatalf("provisioning matcher: %v", err)
+			}
+
+			matched, err := tlsMatchTester(t, tc.matcher, tc.clientSNI, tc.startupMessage)
 			assertNoError(t, err)
 
 			if matched != tc.wantMatch {
