@@ -12,6 +12,13 @@ import (
 	"testing"
 	"time"
 
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"math/big"
+
 	"github.com/caddyserver/caddy/v2"
 	"github.com/mholt/caddy-l4/layer4"
 	"go.uber.org/zap"
@@ -35,6 +42,40 @@ func closePipe(wg *sync.WaitGroup, c1 net.Conn, c2 net.Conn) {
 	wg.Wait()
 	_ = c1.Close()
 	_ = c2.Close()
+}
+
+func generateTestCert(t *testing.T) tls.Certificate {
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("Failed to generate private key: %v", err)
+	}
+	notBefore := time.Now()
+	notAfter := notBefore.Add(time.Hour)
+	serialNumber, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		t.Fatalf("Failed to generate serial number: %v", err)
+	}
+	template := x509.Certificate{
+		SerialNumber: serialNumber,
+		Subject: pkix.Name{
+			Organization: []string{"Caddy Test"},
+		},
+		NotBefore: notBefore,
+		NotAfter:  notAfter,
+		KeyUsage:  x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		IPAddresses: []net.IP{net.ParseIP("127.0.0.1")},
+		DNSNames:    []string{"localhost", "dev.test.com", "*.wild.com"},
+	}
+	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
+	if err != nil {
+		t.Fatalf("Failed to create certificate: %v", err)
+	}
+	return tls.Certificate{
+		Certificate: [][]byte{derBytes},
+		PrivateKey:  priv,
+	}
 }
 
 func matchTester(t *testing.T, matcher *MatchPostgres, input []byte) (bool, error) {
@@ -61,6 +102,56 @@ func matchTester(t *testing.T, matcher *MatchPostgres, input []byte) (bool, erro
 	// After the matcher has done its reading, we must drain the rest of the
 	// connection so that the writer goroutine doesn't block forever.
 	_, _ = io.Copy(io.Discard, cx)
+
+	return matched, err
+}
+
+func tlsMatchTester(t *testing.T, matcher *MatchPostgres, clientSNI string, negotiatedProtocol string) (bool, error) {
+	cert := generateTestCert(t)
+
+	serverConf := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		NextProtos:   []string{negotiatedProtocol},
+	}
+	clientConf := &tls.Config{
+		ServerName:         clientSNI,
+		InsecureSkipVerify: true,
+		NextProtos:         []string{negotiatedProtocol},
+	}
+
+	client, server := net.Pipe()
+	var serverConn net.Conn
+	var serverHandshakeErr error
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer server.Close()
+		s := tls.Server(server, serverConf)
+		if err := s.Handshake(); err != nil && !errors.Is(err, io.EOF) {
+			serverHandshakeErr = err
+		}
+		serverConn = s
+	}()
+
+	c := tls.Client(client, clientConf)
+	clientHandshakeErr := c.Handshake()
+
+	wg.Wait()
+
+	if clientHandshakeErr != nil && !errors.Is(clientHandshakeErr, io.EOF) && !errors.Is(clientHandshakeErr, net.ErrClosed) {
+		t.Logf("client handshake error: %v", clientHandshakeErr)
+	}
+	if serverHandshakeErr != nil && !errors.Is(serverHandshakeErr, io.EOF) && !errors.Is(serverHandshakeErr, net.ErrClosed) {
+		t.Logf("server handshake error: %v", serverHandshakeErr)
+	}
+
+	cx := layer4.WrapConnection(serverConn, []byte{}, zap.NewNop())
+	matched, err := matcher.Match(cx)
+
+	_ = c.Close()
+	_ = client.Close()
 
 	return matched, err
 }
@@ -110,7 +201,7 @@ func buildClientHello(t *testing.T, alpn ...string) []byte {
 		tlsClient := tls.Client(client, &tls.Config{
 			NextProtos:         alpn,
 			InsecureSkipVerify: true,
-			ServerName:         "test",
+			ServerName:         "dev.test.com",
 		})
 		// Handshake will write client hello, then wait for server hello
 		// we don't send one, so it will time out or fail on pipe close
@@ -205,7 +296,7 @@ func TestMatchPostgres(t *testing.T) {
 			name:      "TLS disabled with SSLRequest",
 			matcher:   &MatchPostgres{TLS: "disabled"},
 			input:     buildSSLRequest(),
-			wantMatch: false,
+			wantMatch: true,
 		},
 		{
 			name:      "TLS allowed with SSLRequest and user filter",
@@ -331,14 +422,103 @@ func TestMatchPostgres(t *testing.T) {
 			input:     buildClientHello(t, "postgresql"),
 			wantMatch: false,
 		},
-	}
 
-	_, cancel := caddy.NewContext(caddy.Context{Context: context.Background()})
-	defer cancel()
+		// SNI Tests (raw TLS handshake)
+		{
+			name:      "SNI match",
+			matcher:   &MatchPostgres{SNI: []string{"dev.test.com"}},
+			input:     buildClientHello(t, "postgresql"),
+			wantMatch: true,
+		},
+		{
+			name:      "SNI mismatch",
+			matcher:   &MatchPostgres{SNI: []string{"not.test.com"}},
+			input:     buildClientHello(t, "postgresql"),
+			wantMatch: false,
+		},
+		{
+			name:      "SNI wildcard mismatch",
+			matcher:   &MatchPostgres{SNI: []string{"*.wild.com"}},
+			input:     buildClientHello(t, "postgresql"),
+			wantMatch: false, // buildClientHello uses "dev.test.com", not something that would match
+		},
+		{
+			name:      "SNI wildcard match",
+			matcher:   &MatchPostgres{SNI: []string{"*.test.com"}},
+			input:     buildClientHello(t, "postgresql"),
+			wantMatch: true, // buildClientHello uses "dev.test.com", that should match
+		},
+	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := caddy.NewContext(caddy.Context{Context: context.Background()})
+			defer cancel()
+			err := tc.matcher.Provision(ctx)
+			if err != nil {
+				t.Fatalf("provisioning matcher: %v", err)
+			}
+
 			matched, err := matchTester(t, tc.matcher, tc.input)
+			assertNoError(t, err)
+
+			if matched != tc.wantMatch {
+				if tc.wantMatch {
+					t.Fatalf("matcher did not match | %s\n", tc.name)
+				} else {
+					t.Fatalf("matcher should not have matched | %s\n", tc.name)
+				}
+			}
+		})
+	}
+
+	// Tests for already-established TLS connections
+	tlsTests := []struct {
+		name               string
+		matcher            *MatchPostgres
+		clientSNI          string
+		negotiatedProtocol string
+		wantMatch          bool
+	}{
+		{
+			name:               "Pre-TLS SNI match",
+			matcher:            &MatchPostgres{TLS: "required", SNI: []string{"dev.test.com"}},
+			clientSNI:          "dev.test.com",
+			negotiatedProtocol: "postgresql",
+			wantMatch:          true,
+		},
+		{
+			name:               "Pre-TLS SNI mismatch",
+			matcher:            &MatchPostgres{TLS: "required", SNI: []string{"another.com"}},
+			clientSNI:          "dev.test.com",
+			negotiatedProtocol: "postgresql",
+			wantMatch:          false,
+		},
+		{
+			name:               "Pre-TLS SNI wildcard match",
+			matcher:            &MatchPostgres{TLS: "required", SNI: []string{"*.wild.com"}},
+			clientSNI:          "sub.wild.com",
+			negotiatedProtocol: "postgresql",
+			wantMatch:          true,
+		},
+		{
+			name:               "Pre-TLS wrong ALPN",
+			matcher:            &MatchPostgres{TLS: "required", SNI: []string{"dev.test.com"}},
+			clientSNI:          "dev.test.com",
+			negotiatedProtocol: "http/1.1",
+			wantMatch:          false,
+		},
+	}
+	for _, tc := range tlsTests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := caddy.NewContext(caddy.Context{Context: context.Background()})
+			defer cancel()
+			err := tc.matcher.Provision(ctx)
+			if err != nil {
+				t.Fatalf("provisioning matcher: %v", err)
+			}
+
+			matched, err := tlsMatchTester(t, tc.matcher, tc.clientSNI, tc.negotiatedProtocol)
 			assertNoError(t, err)
 
 			if matched != tc.wantMatch {
