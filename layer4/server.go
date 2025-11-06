@@ -16,6 +16,7 @@ package layer4
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -26,11 +27,18 @@ import (
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
+	"github.com/caddyserver/caddy/v2/caddyconfig"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"go.uber.org/zap"
 )
 
 const MatchingTimeoutDefault = 3 * time.Second
+
+// AutomationSubjectsProvider is an interface that TLS handlers can
+// implement to provide subject names for certificate automation.
+type AutomationSubjectsProvider interface {
+	AutomationSubjects() []string
+}
 
 // Server represents a Caddy layer4 server.
 type Server struct {
@@ -39,15 +47,21 @@ type Server struct {
 	// https://caddyserver.com/docs/conventions#network-addresses
 	Listen []string `json:"listen,omitempty"`
 
+	// TLSRaw is the raw JSON of the TLS handler for this server.
+	// If set, TLS will be terminated for all connections before routing.
+	TLSRaw json.RawMessage `json:"tls,omitempty" caddy:"namespace=layer4.handlers name=tls"`
+
 	// Routes express composable logic for handling byte streams.
 	Routes RouteList `json:"routes,omitempty"`
 
 	// Maximum time connections have to complete the matching phase (the first terminal handler is matched). Default: 3s.
 	MatchingTimeout caddy.Duration `json:"matching_timeout,omitempty"`
 
-	logger        *zap.Logger
-	listenAddrs   []caddy.NetworkAddress
-	compiledRoute Handler
+	logger           *zap.Logger
+	listenAddrs      []caddy.NetworkAddress
+	compiledRoute    Handler
+	tlsHandler       Handler // unexported
+	tlsHandlerModule any     // unexported, for caddyfile parsing
 }
 
 // Provision sets up the server.
@@ -66,6 +80,24 @@ func (s *Server) Provision(ctx caddy.Context, logger *zap.Logger) error {
 			return fmt.Errorf("parsing listener address '%s' in position %d: %v", address, i, err)
 		}
 		s.listenAddrs = append(s.listenAddrs, addr)
+	}
+
+	// if there is a top-level TLS config, load and provision it, then prepend it to all the routes
+	if len(s.TLSRaw) > 0 {
+		mod, err := ctx.LoadModule(s, "TLSRaw")
+		if err != nil {
+			return fmt.Errorf("loading TLS handler module: %v", err)
+		}
+		s.tlsHandler = mod.(Handler)
+
+		tlsHandlerJSON, err := SetModuleNameInline("handler", "tls", s.TLSRaw)
+		if err != nil {
+			return fmt.Errorf("injecting handler name into TLS config: %v", err)
+		}
+
+		for _, route := range s.Routes {
+			route.HandlersRaw = append([]json.RawMessage{tlsHandlerJSON}, route.HandlersRaw...)
+		}
 	}
 
 	err := s.Routes.Provision(ctx)
@@ -196,6 +228,9 @@ func (s *Server) handle(conn net.Conn) {
 // UnmarshalCaddyfile sets up the Server from Caddyfile tokens. Syntax:
 //
 //	<address:port> [<address:port>] {
+//		tls {
+//			...
+//		}
 //		matching_timeout <duration>
 //		@a <matcher> [<matcher_args>]
 //		@b {
@@ -221,8 +256,11 @@ func (s *Server) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 		s.Listen = append(s.Listen, d.Val())
 	}
 
-	if err := ParseCaddyfileNestedRoutes(d, &s.Routes, &s.MatchingTimeout); err != nil {
+	if err := ParseCaddyfileNestedRoutes(d, &s.Routes, &s.MatchingTimeout, &s.tlsHandlerModule); err != nil {
 		return err
+	}
+	if s.tlsHandlerModule != nil {
+		s.TLSRaw = caddyconfig.JSON(s.tlsHandlerModule, nil)
 	}
 
 	return nil

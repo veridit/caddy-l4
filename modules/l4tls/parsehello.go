@@ -30,7 +30,7 @@ import (
 //
 // This code has been modified since then.
 
-func parseRawClientHello(data []byte) (info ClientHelloInfo) {
+func ParseRawClientHello(data []byte) (info ClientHelloInfo) {
 	defer func() {
 		if len(info.SupportedVersions) == 0 {
 			info.SupportedVersions = supportedVersionsFromMax(info.Version)
@@ -345,17 +345,3 @@ const (
 const (
 	statusTypeOCSP uint8 = 1
 )
-
-// KeyShare is a TLS 1.3 Key Share. See RFC 8446, Section 4.2.8.
-type KeyShare struct {
-	Group tls.CurveID
-	Data  []byte
-}
-
-// PSKIdentity is a TLS 1.3 PSK Identity.
-// Can be a Session Ticket, or a reference to a saved
-// session. See RFC 8446, Section 4.2.11.
-type PSKIdentity struct {
-	label               []byte
-	obfuscatedTicketAge uint32
-}

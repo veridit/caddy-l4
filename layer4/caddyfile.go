@@ -9,6 +9,7 @@ import (
 	"github.com/caddyserver/caddy/v2/caddyconfig"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
+	"github.com/caddyserver/caddy/v2/modules/caddytls"
 )
 
 func init() {
@@ -30,17 +31,28 @@ func init() {
 //		}
 //	}
 func parseLayer4(d *caddyfile.Dispenser, existingVal any) (any, error) {
-	app := &App{Servers: make(map[string]*Server)}
+	// an existingVal is a []httpcaddyfile.App
+	apps, _ := existingVal.([]httpcaddyfile.App)
 
-	// Multiple global layer4 blocks are combined
-	if existingVal != nil {
-		appConfig, ok := existingVal.(httpcaddyfile.App)
-		if !ok {
-			return nil, d.Errf("existing %T config of unexpected type: %T", *app, existingVal)
-		}
-		err := json.Unmarshal(appConfig.Value, app)
+	// get or create layer4 app value
+	var l4App *App
+	appJSON, found := getApp(apps, "layer4")
+	if found {
+		err := json.Unmarshal(appJSON, &l4App)
 		if err != nil {
-			return nil, d.Errf("parsing existing %T config: %v", *app, err)
+			return nil, d.Errf("decoding existing layer4 app config: %v", err)
+		}
+	} else {
+		l4App = &App{Servers: make(map[string]*Server)}
+	}
+
+	// get or create tls app value
+	var tlsApp caddytls.TLS
+	appJSON, found = getApp(apps, "tls")
+	if found {
+		err := json.Unmarshal(appJSON, &tlsApp)
+		if err != nil {
+			return nil, d.Errf("decoding existing tls app config: %v", err)
 		}
 	}
 
@@ -51,7 +63,7 @@ func parseLayer4(d *caddyfile.Dispenser, existingVal any) (any, error) {
 		return nil, d.ArgErr()
 	}
 
-	i := len(app.Servers)
+	i := len(l4App.Servers)
 	for nesting := d.Nesting(); d.NextBlock(nesting); {
 		server := &Server{}
 		var inst any = server
@@ -62,20 +74,68 @@ func parseLayer4(d *caddyfile.Dispenser, existingVal any) (any, error) {
 		if err := unm.UnmarshalCaddyfile(d); err != nil {
 			return nil, err
 		}
-		app.Servers["srv"+strconv.Itoa(i)] = server
+		l4App.Servers["srv"+strconv.Itoa(i)] = server
 		i++
+
+		// if the server has a TLS handler with automation subjects,
+		// configure the main TLS app accordingly
+		if server.tlsHandlerModule != nil {
+			if h, ok := server.tlsHandlerModule.(AutomationSubjectsProvider); ok {
+				var subjects []string
+				isInternal := false
+				for _, arg := range h.AutomationSubjects() {
+					if arg == "internal" {
+						isInternal = true
+					} else {
+						subjects = append(subjects, arg)
+					}
+				}
+
+				if len(subjects) > 0 && !isInternal {
+					// add subjects to automate loader
+					if tlsApp.CertificatesRaw == nil {
+						tlsApp.CertificatesRaw = make(caddy.ModuleMap)
+					}
+					var automateLoader caddytls.AutomateLoader
+					if tlsApp.CertificatesRaw["automate"] != nil {
+						err := json.Unmarshal(tlsApp.CertificatesRaw["automate"], &automateLoader)
+						if err != nil {
+							return nil, fmt.Errorf("unmarshaling existing 'automate' certificate loader: %v", err)
+						}
+					}
+					automateLoader = append(automateLoader, subjects...)
+					automateBytes, err := json.Marshal(automateLoader)
+					if err != nil {
+						return nil, fmt.Errorf("marshaling 'automate' certificate loader: %v", err)
+					}
+					tlsApp.CertificatesRaw["automate"] = automateBytes
+				}
+
+				if isInternal {
+					if tlsApp.Automation == nil {
+						tlsApp.Automation = new(caddytls.AutomationConfig)
+					}
+					policy := &caddytls.AutomationPolicy{
+						SubjectsRaw: subjects,
+						IssuersRaw:  []json.RawMessage{json.RawMessage(`{"module":"internal"}`)},
+					}
+					tlsApp.Automation.Policies = append(tlsApp.Automation.Policies, policy)
+				}
+			}
+		}
 	}
 
-	return httpcaddyfile.App{
-		Name:  "layer4",
-		Value: caddyconfig.JSON(app, nil),
-	}, nil
+	setApp(&apps, "layer4", caddyconfig.JSON(l4App, nil))
+	setApp(&apps, "tls", caddyconfig.JSON(tlsApp, nil))
+
+	return apps, nil
 }
 
 // ParseCaddyfileNestedRoutes parses the Caddyfile tokens for nested named matcher sets, handlers and matching timeout,
 // composes a list of route configurations, and adjusts the matching timeout.
-func ParseCaddyfileNestedRoutes(d *caddyfile.Dispenser, routes *RouteList, matchingTimeout *caddy.Duration) error {
+func ParseCaddyfileNestedRoutes(d *caddyfile.Dispenser, routes *RouteList, matchingTimeout *caddy.Duration, tlsHandlerModule *any) error {
 	var hasMatchingTimeout bool
+	var hasTLS bool
 	matcherSetTokensByName, routeTokens := make(map[string][]caddyfile.Token), make([]caddyfile.Token, 0)
 	for nesting := d.Nesting(); d.NextBlock(nesting); {
 		optionName := d.Val()
@@ -98,6 +158,16 @@ func ParseCaddyfileNestedRoutes(d *caddyfile.Dispenser, routes *RouteList, match
 			*matchingTimeout, hasMatchingTimeout = caddy.Duration(dur), true
 		} else if optionName == "route" {
 			routeTokens = append(routeTokens, d.NextSegment()...)
+		} else if optionName == "tls" {
+			if hasTLS {
+				return d.Err("tls block already specified")
+			}
+			mod, err := caddyfile.UnmarshalModule(d.NewFromNextSegment(), "layer4.handlers.tls")
+			if err != nil {
+				return err
+			}
+			*tlsHandlerModule = mod
+			hasTLS = true
 		} else {
 			return d.ArgErr()
 		}
@@ -211,6 +281,44 @@ func ParseCaddyfileNestedMatcherSet(d *caddyfile.Dispenser) (caddy.ModuleMap, er
 	return matcherSet, nil
 }
 
+// ParseCaddyfileNestedTLSMatcherSet parses the Caddyfile tokens for a nested
+// TLS handshake matcher set, and returns its raw module map value.
+func ParseCaddyfileNestedTLSMatcherSet(d *caddyfile.Dispenser) (caddy.ModuleMap, error) {
+	matcherMap := make(map[string]caddytls.ConnectionMatcher)
+
+	tokensByMatcherName := make(map[string][]caddyfile.Token)
+	for nesting := d.Nesting(); d.NextArg() || d.NextBlock(nesting); {
+		matcherName := d.Val()
+		tokensByMatcherName[matcherName] = append(tokensByMatcherName[matcherName], d.NextSegment()...)
+	}
+
+	for matcherName, tokens := range tokensByMatcherName {
+		dd := caddyfile.NewDispenser(tokens)
+		dd.Next() // consume wrapper name
+
+		unm, err := caddyfile.UnmarshalModule(dd, "tls.handshake_match."+matcherName)
+		if err != nil {
+			return nil, err
+		}
+		cm, ok := unm.(caddytls.ConnectionMatcher)
+		if !ok {
+			return nil, fmt.Errorf("matcher module '%s' is not a connection matcher", matcherName)
+		}
+		matcherMap[matcherName] = cm
+	}
+
+	matcherSet := make(caddy.ModuleMap)
+	for name, matcher := range matcherMap {
+		jsonBytes, err := json.Marshal(matcher)
+		if err != nil {
+			return nil, fmt.Errorf("marshaling %T matcher: %v", matcher, err)
+		}
+		matcherSet[name] = jsonBytes
+	}
+
+	return matcherSet, nil
+}
+
 // SetModuleNameInline sets the string value of moduleNameKey to moduleName in raw,
 // where raw must be a JSON encoding of a map, and returns the modified raw.
 // In fact, it is a reverse function for caddy.getModuleNameInline.
@@ -232,4 +340,23 @@ func SetModuleNameInline(moduleNameKey, moduleName string, raw json.RawMessage) 
 	}
 
 	return result, nil
+}
+
+func getApp(apps []httpcaddyfile.App, name string) (json.RawMessage, bool) {
+	for _, app := range apps {
+		if app.Name == name {
+			return app.Value, true
+		}
+	}
+	return nil, false
+}
+
+func setApp(apps *[]httpcaddyfile.App, name string, value json.RawMessage) {
+	for i, app := range *apps {
+		if app.Name == name {
+			(*apps)[i].Value = value
+			return
+		}
+	}
+	*apps = append(*apps, httpcaddyfile.App{Name: name, Value: value})
 }

@@ -134,13 +134,12 @@ func tlsMatchTester(t *testing.T, matcher *MatchPostgres, clientSNI string, star
 			serverHandshakeErr = err
 			return
 		}
-		defer conn.Close()
 		s := tls.Server(conn, serverConf)
 		// Handshake will block until client sends close_notify or an error occurs.
 		err = s.Handshake()
 		if err != nil {
 			// A clean EOF from client closing pipe is not an error here.
-			if !errors.Is(err, io.EOF) {
+			if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
 				serverHandshakeErr = err
 			}
 		}
@@ -176,6 +175,7 @@ func tlsMatchTester(t *testing.T, matcher *MatchPostgres, clientSNI string, star
 	if serverConn == nil {
 		return false, errors.New("server connection is nil after handshake")
 	}
+	defer serverConn.Close()
 
 	cx := layer4.WrapConnection(serverConn, []byte{}, zap.NewNop())
 	return matcher.Match(cx)
@@ -449,31 +449,6 @@ func TestMatchPostgres(t *testing.T) {
 			wantMatch: false,
 		},
 
-		// SNI Tests (raw TLS handshake)
-		{
-			name:      "SNI match",
-			matcher:   &MatchPostgres{SNI: []string{"dev.test.com"}},
-			input:     buildClientHello(t, "postgresql"),
-			wantMatch: true,
-		},
-		{
-			name:      "SNI mismatch",
-			matcher:   &MatchPostgres{SNI: []string{"not.test.com"}},
-			input:     buildClientHello(t, "postgresql"),
-			wantMatch: false,
-		},
-		{
-			name:      "SNI wildcard mismatch",
-			matcher:   &MatchPostgres{SNI: []string{"*.wild.com"}},
-			input:     buildClientHello(t, "postgresql"),
-			wantMatch: false, // buildClientHello uses "dev.test.com", not something that would match
-		},
-		{
-			name:      "SNI wildcard match",
-			matcher:   &MatchPostgres{SNI: []string{"*.test.com"}},
-			input:     buildClientHello(t, "postgresql"),
-			wantMatch: true, // buildClientHello uses "dev.test.com", that should match
-		},
 	}
 
 	for _, tc := range tests {
@@ -506,24 +481,6 @@ func TestMatchPostgres(t *testing.T) {
 		startupMessage []byte
 		wantMatch      bool
 	}{
-		{
-			name:      "Pre-TLS SNI match",
-			matcher:   &MatchPostgres{TLS: "required", SNI: []string{"dev.test.com"}},
-			clientSNI: "dev.test.com",
-			wantMatch: true,
-		},
-		{
-			name:      "Pre-TLS SNI mismatch",
-			matcher:   &MatchPostgres{TLS: "required", SNI: []string{"another.com"}},
-			clientSNI: "dev.test.com",
-			wantMatch: false,
-		},
-		{
-			name:      "Pre-TLS SNI wildcard match",
-			matcher:   &MatchPostgres{TLS: "required", SNI: []string{"*.wild.com"}},
-			clientSNI: "sub.wild.com",
-			wantMatch: true,
-		},
 		{
 			name:           "Pre-TLS with user filter match",
 			matcher:        &MatchPostgres{TLS: "allowed", User: map[string][]string{"alice": {}}},

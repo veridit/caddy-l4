@@ -50,10 +50,10 @@ import (
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
-	"github.com/caddyserver/caddy/v2/modules/caddytls"
 	"go.uber.org/zap"
 
 	"github.com/mholt/caddy-l4/layer4"
+	"github.com/mholt/caddy-l4/modules/l4tls"
 )
 
 const (
@@ -76,7 +76,6 @@ type MatchPostgres struct {
 	User   map[string][]string `json:"user,omitempty"`
 	Client []string            `json:"client,omitempty"`
 	TLS    string              `json:"tls,omitempty"`
-	SNI    []string            `json:"sni,omitempty"`
 
 	logger *zap.Logger `json:"-"`
 }
@@ -111,21 +110,10 @@ func (m *MatchPostgres) matchDecryptedTLS(cx *layer4.Connection, tlsConn *tls.Co
 	m.logger.Debug("checking existing TLS connection state",
 		zap.String("server_name", state.ServerName))
 
-	if len(m.SNI) > 0 {
-		sniMatcher := caddytls.MatchServerName(m.SNI)
-		hello := &tls.ClientHelloInfo{ServerName: state.ServerName}
-		if !sniMatcher.Match(hello) {
-			m.logger.Debug("not matching, SNI mismatch for established TLS connection",
-				zap.String("server_name", state.ServerName),
-				zap.Strings("expected_sni", m.SNI))
-			return false, nil
-		}
-	}
-
-	// If we are here, TLS and SNI requirements are met.
+	// If we are here, TLS requirements are met.
 	// If there are no other filters, we have a match.
 	if len(m.User) == 0 && len(m.Client) == 0 {
-		m.logger.Debug("matched based on TLS connection and SNI (if configured)")
+		m.logger.Debug("matched based on TLS connection (SNI not checked here)")
 		return true, nil
 	}
 
@@ -192,17 +180,9 @@ func (m *MatchPostgres) matchTLS(cx *layer4.Connection, initialByte []byte) (boo
 		return false, fmt.Errorf("reading ClientHello: %w", err)
 	}
 
-	chi := parseRawClientHello(rawHello)
+	chi := l4tls.ParseRawClientHello(rawHello)
 
 	m.logger.Debug("parsed client hello", zap.Strings("alpn_protos", chi.SupportedProtos), zap.String("server_name", chi.ServerName))
-	if len(m.SNI) > 0 {
-		sniMatcher := caddytls.MatchServerName(m.SNI)
-		hello := &tls.ClientHelloInfo{ServerName: chi.ServerName}
-		if !sniMatcher.Match(hello) {
-			m.logger.Debug("not matching, SNI mismatch in client hello", zap.String("server_name", chi.ServerName), zap.Strings("expected_sni", m.SNI))
-			return false, nil
-		}
-	}
 
 	hasPostgresALPN := slices.Contains(chi.SupportedProtos, "postgresql")
 
@@ -400,11 +380,6 @@ func (m *MatchPostgres) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			}
 			if d.NextBlock(nesting + 1) {
 				return d.Err("`tls` subdirective does not take a block")
-			}
-		case "sni":
-			m.SNI = append(m.SNI, d.RemainingArgs()...)
-			if d.NextBlock(nesting + 1) {
-				return d.Err("`sni` subdirective does not take a block")
 			}
 		default:
 			return d.Errf("unrecognized subdirective '%s'", d.Val())

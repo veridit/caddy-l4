@@ -15,6 +15,7 @@
 package l4tls
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -74,11 +75,58 @@ func (m *MatchTLS) Provision(ctx caddy.Context) error {
 
 // Match returns true if the connection is a TLS handshake.
 func (m *MatchTLS) Match(cx *layer4.Connection) (bool, error) {
+	if tlsConn, ok := cx.Conn.(*tls.Conn); ok {
+		return m.matchWithConnState(cx, tlsConn)
+	}
+	return m.matchWithRawHello(cx)
+}
+
+func (m *MatchTLS) matchWithConnState(cx *layer4.Connection, tlsConn *tls.Conn) (bool, error) {
+	m.logger.Debug("matching against established TLS connection")
+	state := tlsConn.ConnectionState()
+
+	// also add values to the replacer
+	repl := cx.Context.Value(layer4.ReplacerCtxKey).(*caddy.Replacer)
+	repl.Set("l4.tls.server_name", state.ServerName)
+	repl.Set("l4.tls.negotiated_protocol", state.NegotiatedProtocol)
+
+	// We can't get the original ClientHelloInfo, but we can synthesize one
+	// from the connection state for matchers that only need a subset of the
+	// fields.
+	// The SupportedProtos field is populated with only the protocol that was
+	// finally negotiated, not the full list the client offered. This is
+	// "good enough" for simple ALPN matching, but is technically incomplete.
+	// TODO: To improve this, the l4tls.Handler could store the original
+	// ClientHelloInfo in the connection's context for later use here.
+	hello := &tls.ClientHelloInfo{
+		ServerName:      state.ServerName,
+		SupportedProtos: []string{state.NegotiatedProtocol},
+		Conn:            cx,
+	}
+
+	for _, matcher := range m.matchers {
+		if !matcher.Match(hello) {
+			return false, nil
+		}
+	}
+
+	m.logger.Debug("matched",
+		zap.String("remote", cx.RemoteAddr().String()),
+		zap.String("server_name", state.ServerName),
+	)
+	return true, nil
+}
+
+func (m *MatchTLS) matchWithRawHello(cx *layer4.Connection) (bool, error) {
 	// read the header bytes
 	const recordHeaderLen = 5
 	hdr := make([]byte, recordHeaderLen)
 	_, err := io.ReadFull(cx, hdr)
 	if err != nil {
+		// Not enough data for a TLS handshake is not an error, just not a match.
+		if err == io.ErrUnexpectedEOF || err == io.EOF {
+			return false, nil
+		}
 		return false, err
 	}
 
@@ -89,14 +137,20 @@ func (m *MatchTLS) Match(cx *layer4.Connection) (bool, error) {
 
 	// get length of the ClientHello message and read it
 	length := int(uint16(hdr[3])<<8 | uint16(hdr[4])) // ignoring version in hdr[1:3] - like https://github.com/inetaf/tcpproxy/blob/master/sni.go#L170
+	if length > 4096 {                               // sanity check
+		return false, nil
+	}
 	rawHello := make([]byte, length)
 	_, err = io.ReadFull(cx, rawHello)
 	if err != nil {
+		if err == io.ErrUnexpectedEOF || err == io.EOF {
+			return false, nil
+		}
 		return false, err
 	}
 
 	// parse the ClientHello
-	chi := parseRawClientHello(rawHello)
+	chi := ParseRawClientHello(rawHello)
 	chi.Conn = cx
 
 	// also add values to the replacer
@@ -135,7 +189,7 @@ func (m *MatchTLS) Match(cx *layer4.Connection) (bool, error) {
 func (m *MatchTLS) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	d.Next() // consume wrapper name
 
-	matcherSet, err := ParseCaddyfileNestedMatcherSet(d)
+	matcherSet, err := layer4.ParseCaddyfileNestedTLSMatcherSet(d)
 	if err != nil {
 		return err
 	}
@@ -152,49 +206,3 @@ var (
 	_ json.Marshaler        = (*MatchTLS)(nil)
 	_ json.Unmarshaler      = (*MatchTLS)(nil)
 )
-
-// ParseCaddyfileNestedMatcherSet parses the Caddyfile tokens for a nested
-// matcher set, and returns its raw module map value.
-func ParseCaddyfileNestedMatcherSet(d *caddyfile.Dispenser) (caddy.ModuleMap, error) {
-	matcherMap := make(map[string]caddytls.ConnectionMatcher)
-
-	tokensByMatcherName := make(map[string][]caddyfile.Token)
-	for nesting := d.Nesting(); d.NextArg() || d.NextBlock(nesting); {
-		matcherName := d.Val()
-		tokensByMatcherName[matcherName] = append(tokensByMatcherName[matcherName], d.NextSegment()...)
-	}
-
-	for matcherName, tokens := range tokensByMatcherName {
-		dd := caddyfile.NewDispenser(tokens)
-		dd.Next() // consume wrapper name
-
-		mod, err := caddy.GetModule("tls.handshake_match." + matcherName)
-		if err != nil {
-			return nil, d.Errf("getting matcher module '%s': %v", matcherName, err)
-		}
-		unm, ok := mod.New().(caddyfile.Unmarshaler)
-		if !ok {
-			return nil, d.Errf("matcher module '%s' is not a Caddyfile unmarshaler", matcherName)
-		}
-		err = unm.UnmarshalCaddyfile(dd.NewFromNextSegment())
-		if err != nil {
-			return nil, err
-		}
-		cm, ok := unm.(caddytls.ConnectionMatcher)
-		if !ok {
-			return nil, fmt.Errorf("matcher module '%s' is not a connection matcher", matcherName)
-		}
-		matcherMap[matcherName] = cm
-	}
-
-	matcherSet := make(caddy.ModuleMap)
-	for name, matcher := range matcherMap {
-		jsonBytes, err := json.Marshal(matcher)
-		if err != nil {
-			return nil, fmt.Errorf("marshaling %T matcher: %v", matcher, err)
-		}
-		matcherSet[name] = jsonBytes
-	}
-
-	return matcherSet, nil
-}

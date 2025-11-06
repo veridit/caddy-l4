@@ -75,8 +75,11 @@ $ xcaddy build --with github.com/mholt/caddy-l4
 Alternatively, to hack on the plugin code, you can clone it down, then build and run like so:
 
 1. Download or clone this repo: `git clone https://github.com/mholt/caddy-l4.git`
-2. In the project folder, run `xcaddy` just like you would run `caddy`. For example: `xcaddy list-modules --versions` (you should see the `layer4` modules).
-3. Run all tests with `go test -v ./...`, and a specific test for a specific moduel with say  `go test -v ./modules/l4postgres`
+2. In the project folder, run `xcaddy` just like you would run `caddy`.
+   For example: `xcaddy -- list-modules --versions` (you should see the `layer4` modules).
+   Notice the the '--' that allows passing parameters to the built caddy instance, instead of to xcaddy itself.
+3. Run all tests with `go test -v ./...`, or
+   a specific test for a specific module with say  `go test -v ./modules/l4tls`.
 
 
 ## Writing config
@@ -140,8 +143,8 @@ A simple echo server with TLS termination that uses a self-signed cert for `loca
 {
     layer4 {
         127.0.0.1:5000 {
+            tls localhost
             route {
-                tls
                 echo
             }
         }
@@ -159,32 +162,23 @@ A simple echo server with TLS termination that uses a self-signed cert for `loca
 			"servers": {
 				"example": {
 					"listen": ["127.0.0.1:5000"],
+					"tls": {},
 					"routes": [
 						{
 							"handle": [
-								{"handler": "tls"},
 								{"handler": "echo"}
 							]
 						}
 					]
 				}
 			}
-		},
-		"tls": {
-			"certificates": {
-				"automate": ["localhost"]
-			},
-			"automation": {
-				"policies": [
-					{
-						"issuers": [{"module": "internal"}]
-					}
-				]
-			}
 		}
 	}
 }
 ```
+> [!NOTE]
+> The Caddyfile adapter for `layer4` automatically configured the main `tls` app to manage a certificate for `localhost` using its internal issuer. The JSON above only shows the `layer4` app's configuration.
+
 </details>
 
 A simple TCP reverse proxy that terminates TLS on 993, and sends the PROXY protocol header to 1143 through 143:
@@ -196,8 +190,8 @@ A simple TCP reverse proxy that terminates TLS on 993, and sends the PROXY proto
 {
     layer4 {
         0.0.0.0:993 {
+            tls
             route {
-                tls
                 proxy {
                     proxy_protocol v1
                     upstream localhost:143
@@ -227,12 +221,10 @@ A simple TCP reverse proxy that terminates TLS on 993, and sends the PROXY proto
 			"servers": {
 				"secure-imap": {
 					"listen": ["0.0.0.0:993"],
+					"tls": {},
 					"routes": [
 						{
 							"handle": [
-								{
-									"handler": "tls"
-								},
 								{
 									"handler": "proxy",
 									"proxy_protocol": "v1",
