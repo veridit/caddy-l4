@@ -18,6 +18,20 @@ import (
 	"crypto/tls"
 )
 
+// KeyShare is a TLS 1.3 Key Share. See RFC 8446, Section 4.2.8.
+type KeyShare struct {
+	Group tls.CurveID
+	Data  []byte
+}
+
+// PSKIdentity is a TLS 1.3 PSK Identity.
+// Can be a Session Ticket, or a reference to a saved
+// session. See RFC 8446, Section 4.2.11.
+type PSKIdentity struct {
+	label               []byte
+	obfuscatedTicketAge uint32
+}
+
 // ClientHelloInfo holds information about a TLS ClientHello.
 // Our own parser collects a little more information than
 // the standard library's struct holds.

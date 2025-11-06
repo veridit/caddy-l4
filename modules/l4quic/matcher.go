@@ -256,7 +256,7 @@ func (m *MatchQUIC) Provision(ctx caddy.Context) error {
 func (m *MatchQUIC) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	d.Next() // consume wrapper name
 
-	matcherSet, err := l4tls.ParseCaddyfileNestedMatcherSet(d)
+	matcherSet, err := layer4.ParseCaddyfileNestedTLSMatcherSet(d)
 	if err != nil {
 		return err
 	}

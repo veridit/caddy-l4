@@ -34,6 +34,9 @@ func init() {
 type Handler struct {
 	ConnectionPolicies caddytls.ConnectionPolicies `json:"connection_policies,omitempty"`
 
+	// unexported fields for Caddyfile parsing
+	automationSubjects []string
+
 	ctx    caddy.Context
 	logger *zap.Logger
 }
@@ -108,43 +111,163 @@ func (t *Handler) Handle(cx *layer4.Connection, next layer4.Handler) error {
 
 // UnmarshalCaddyfile sets up the Handler from Caddyfile tokens. Syntax:
 //
+//	tls <domains...>|internal {
+//	    ...
+//	}
+//
 //	tls {
 //		connection_policy {
 //			...
 //		}
-//		connection_policy {
-//			...
-//		}
 //	}
-//	tls
 func (t *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
-	_, wrapper := d.Next(), d.Val() // consume wrapper name
+	d.Next() // consume wrapper name: tls
 
-	// No same-line options are supported
-	if d.CountRemainingArgs() > 0 {
-		return d.ArgErr()
+	// same-line options are shorthands for automation
+	t.automationSubjects = d.RemainingArgs()
+
+	// if there are shorthands, a block is not allowed, to avoid ambiguity
+	if len(t.automationSubjects) > 0 {
+		if d.NextBlock(d.Nesting()) {
+			return d.Err("automation shorthands (like 'internal' or domain names) cannot be combined with a block")
+		}
+		return nil
 	}
 
-	for nesting := d.Nesting(); d.NextBlock(nesting); {
-		optionName := d.Val()
-		switch optionName {
-		case "connection_policy":
+	// if the block is empty, we're done
+	if !d.NextBlock(d.Nesting()) {
+		return nil
+	}
+
+	// if the user is specifying one or more full connection policies
+	if d.Val() == "connection_policy" {
+		for {
 			cp := &caddytls.ConnectionPolicy{}
 			if err := cp.UnmarshalCaddyfile(d.NewFromNextSegment()); err != nil {
 				return err
 			}
 			t.ConnectionPolicies = append(t.ConnectionPolicies, cp)
+			if !d.Next() {
+				break
+			}
+			if d.Val() != "connection_policy" {
+				return d.Err("all directives in this block must be connection_policy if the first one is")
+			}
+		}
+		return nil
+	}
+
+	// otherwise, they are configuring a single, default connection policy
+	cp := new(caddytls.ConnectionPolicy)
+	t.ConnectionPolicies = caddytls.ConnectionPolicies{cp}
+
+	// this is largely a copy of caddytls.ConnectionPolicy.UnmarshalCaddyfile's logic,
+	// because we are in a context where we are parsing the policy's subdirectives directly.
+	var hasCertSelection, hasClientAuth, hasDefaultSNI, hasDrop,
+		hasFallbackSNI, hasInsecureSecretsLog, hasMatch, hasProtocols bool
+	for nesting := d.Nesting(); d.NextBlock(nesting); {
+		optionName := d.Val()
+		switch optionName {
+		case "alpn":
+			if d.CountRemainingArgs() == 0 {
+				return d.ArgErr()
+			}
+			cp.ALPN = append(cp.ALPN, d.RemainingArgs()...)
+		case "cert_selection":
+			if hasCertSelection {
+				return d.Errf("duplicate option '%s'", optionName)
+			}
+			p := &caddytls.CustomCertSelectionPolicy{}
+			if err := p.UnmarshalCaddyfile(d.NewFromNextSegment()); err != nil {
+				return err
+			}
+			cp.CertSelection, hasCertSelection = p, true
+		case "client_auth":
+			if hasClientAuth {
+				return d.Errf("duplicate option '%s'", optionName)
+			}
+			ca := &caddytls.ClientAuthentication{}
+			if err := ca.UnmarshalCaddyfile(d.NewFromNextSegment()); err != nil {
+				return err
+			}
+			cp.ClientAuthentication, hasClientAuth = ca, true
+		case "ciphers":
+			if d.CountRemainingArgs() == 0 {
+				return d.ArgErr()
+			}
+			cp.CipherSuites = append(cp.CipherSuites, d.RemainingArgs()...)
+		case "curves":
+			if d.CountRemainingArgs() == 0 {
+				return d.ArgErr()
+			}
+			cp.Curves = append(cp.Curves, d.RemainingArgs()...)
+		case "default_sni":
+			if hasDefaultSNI {
+				return d.Errf("duplicate option '%s'", optionName)
+			}
+			if d.CountRemainingArgs() != 1 {
+				return d.ArgErr()
+			}
+			_, cp.DefaultSNI, hasDefaultSNI = d.NextArg(), d.Val(), true
+		case "drop": // EXPERIMENTAL
+			if hasDrop {
+				return d.Errf("duplicate option '%s'", optionName)
+			}
+			cp.Drop, hasDrop = true, true
+		case "fallback_sni": // EXPERIMENTAL
+			if hasFallbackSNI {
+				return d.Errf("duplicate option '%s'", optionName)
+			}
+			if d.CountRemainingArgs() != 1 {
+				return d.ArgErr()
+			}
+			_, cp.FallbackSNI, hasFallbackSNI = d.NextArg(), d.Val(), true
+		case "insecure_secrets_log": // EXPERIMENTAL
+			if hasInsecureSecretsLog {
+				return d.Errf("duplicate option '%s'", optionName)
+			}
+			if d.CountRemainingArgs() != 1 {
+				return d.ArgErr()
+			}
+			_, cp.InsecureSecretsLog, hasInsecureSecretsLog = d.NextArg(), d.Val(), true
+		case "match":
+			if hasMatch {
+				return d.Errf("duplicate option '%s'", optionName)
+			}
+			matcherSet, err := caddytls.ParseCaddyfileNestedMatcherSet(d)
+			if err != nil {
+				return err
+			}
+			cp.MatchersRaw, hasMatch = matcherSet, true
+		case "protocols":
+			if hasProtocols {
+				return d.Errf("duplicate option '%s'", optionName)
+			}
+			if d.CountRemainingArgs() == 0 || d.CountRemainingArgs() > 2 {
+				return d.ArgErr()
+			}
+			_, cp.ProtocolMin, hasProtocols = d.NextArg(), d.Val(), true
+			if d.NextArg() {
+				cp.ProtocolMax = d.Val()
+			}
 		default:
 			return d.ArgErr()
 		}
 
 		// No nested blocks are supported
 		if d.NextBlock(nesting + 1) {
-			return d.Errf("malformed %s option '%s': blocks are not supported", wrapper, optionName)
+			return d.Errf("malformed option '%s': blocks are not supported", optionName)
 		}
 	}
 
 	return nil
+}
+
+// AutomationSubjects returns the subjects for which automation was requested
+// via a Caddyfile shorthand. This is used by the Caddyfile parser to
+// configure the main TLS app.
+func (t *Handler) AutomationSubjects() []string {
+	return t.automationSubjects
 }
 
 func appendClientHello(cx *layer4.Connection, chi ClientHelloInfo) {
@@ -185,7 +308,8 @@ func GetConnectionStates(cx *layer4.Connection) []*tls.ConnectionState {
 
 // Interface guards
 var (
-	_ caddy.Provisioner     = (*Handler)(nil)
-	_ caddyfile.Unmarshaler = (*Handler)(nil)
-	_ layer4.NextHandler    = (*Handler)(nil)
+	_ caddy.Provisioner                 = (*Handler)(nil)
+	_ caddyfile.Unmarshaler             = (*Handler)(nil)
+	_ layer4.NextHandler                = (*Handler)(nil)
+	_ layer4.AutomationSubjectsProvider = (*Handler)(nil)
 )
