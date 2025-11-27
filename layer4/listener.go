@@ -177,6 +177,11 @@ func (l *listener) handle(conn net.Conn) {
 	cx := WrapConnection(conn, buf, l.logger)
 	cx.Context = context.WithValue(cx.Context, listenerCtxKey, l)
 
+	l.logger.Debug("handling connection within listener wrapper",
+		zap.String("remote", cx.RemoteAddr().String()),
+		zap.String("local", cx.LocalAddr().String()),
+	)
+
 	start := time.Now()
 	err = l.compiledRoute.Handle(cx)
 	duration := time.Since(start)

@@ -210,6 +210,11 @@ func (s *Server) handle(conn net.Conn) {
 
 	cx := WrapConnection(conn, buf, s.logger)
 
+	s.logger.Debug("handling connection",
+		zap.String("remote", cx.RemoteAddr().String()),
+		zap.String("local", cx.LocalAddr().String()),
+	)
+
 	start := time.Now()
 	err := s.compiledRoute.Handle(cx)
 	duration := time.Since(start)

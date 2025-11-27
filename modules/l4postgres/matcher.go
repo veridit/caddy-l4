@@ -106,7 +106,9 @@ func (m *MatchPostgres) matchDecryptedTLS(cx *layer4.Connection, tlsConn *tls.Co
 
 	// ConnectionState() should not block here, as the listener wrapper
 	// is handed a connection after the handshake is complete.
+	m.logger.Debug("getting TLS connection state")
 	state := tlsConn.ConnectionState()
+	m.logger.Debug("got TLS connection state")
 	m.logger.Debug("checking existing TLS connection state",
 		zap.String("server_name", state.ServerName))
 
@@ -127,6 +129,7 @@ func (m *MatchPostgres) matchRaw(cx *layer4.Connection) (bool, error) {
 	m.logger.Debug("matching raw connection")
 	// Read first byte to check for TLS handshake
 	initialByte := make([]byte, 1)
+	m.logger.Debug("reading initial byte")
 	// Use ReadFull to ensure we get 1 byte unless EOF.
 	if _, err := io.ReadFull(cx, initialByte); err != nil {
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
