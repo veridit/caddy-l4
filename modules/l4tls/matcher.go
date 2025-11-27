@@ -83,7 +83,9 @@ func (m *MatchTLS) Match(cx *layer4.Connection) (bool, error) {
 
 func (m *MatchTLS) matchWithConnState(cx *layer4.Connection, tlsConn *tls.Conn) (bool, error) {
 	m.logger.Debug("matching against established TLS connection")
+	m.logger.Debug("getting TLS connection state")
 	state := tlsConn.ConnectionState()
+	m.logger.Debug("got TLS connection state")
 
 	// also add values to the replacer
 	repl := cx.Context.Value(layer4.ReplacerCtxKey).(*caddy.Replacer)
@@ -118,9 +120,11 @@ func (m *MatchTLS) matchWithConnState(cx *layer4.Connection, tlsConn *tls.Conn) 
 }
 
 func (m *MatchTLS) matchWithRawHello(cx *layer4.Connection) (bool, error) {
+	m.logger.Debug("matching with raw hello")
 	// read the header bytes
 	const recordHeaderLen = 5
 	hdr := make([]byte, recordHeaderLen)
+	m.logger.Debug("reading TLS record header")
 	_, err := io.ReadFull(cx, hdr)
 	if err != nil {
 		// Not enough data for a TLS handshake is not an error, just not a match.
