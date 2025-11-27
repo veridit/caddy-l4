@@ -75,9 +75,14 @@ $ xcaddy build --with github.com/mholt/caddy-l4
 Alternatively, to hack on the plugin code, you can clone it down, then build and run like so:
 
 1. Download or clone this repo: `git clone https://github.com/mholt/caddy-l4.git`
-2. In the project folder, run `xcaddy` just like you would run `caddy`. For example: `xcaddy list-modules --versions` (you should see the `layer4` modules).
-3. Run all tests with `go test -v ./...`, and a specific test for a specific moduel with say  `go test -v ./modules/l4postgres`
-
+2. In the project folder, run `xcaddy` just like you would run `caddy`.
+   For example: `xcaddy -- list-modules --versions` (you should see the `layer4` modules).
+   Notice the the '--' that allows passing parameters to the built caddy instance, instead of to xcaddy itself.
+3. Run all tests with `go test -v ./...`, or
+   a specific test for a specific module with say  `go test -v ./modules/l4tls`.
+4. Test your code before making a PR, using
+   `xcaddy --with github.com/mholt/caddy-l4=github.com/$your_github_account/caddy-l4@$youre_branch_name`
+   The '=' replaces the package with the fork, and '@' specifies which branch to use in the fork.
 
 ## Writing config
 
