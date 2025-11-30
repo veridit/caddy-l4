@@ -1,0 +1,27 @@
+{
+	debug
+	admin localhost:2019
+	auto_https off
+	layer4 {
+		:15432 {
+			tls internal
+			route {
+				echo
+			}
+		}
+		:15433 {
+			route {
+				echo
+			}
+		}
+		:15434 {
+			route {
+				tls {
+					connection_policy {
+					}
+				}
+				echo
+			}
+		}
+	}
+}
