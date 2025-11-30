@@ -233,9 +233,6 @@ func (s *Server) handle(conn net.Conn) {
 // UnmarshalCaddyfile sets up the Server from Caddyfile tokens. Syntax:
 //
 //	<address:port> [<address:port>] {
-//		tls {
-//			...
-//		}
 //		matching_timeout <duration>
 //		@a <matcher> [<matcher_args>]
 //		@b {
