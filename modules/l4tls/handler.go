@@ -54,9 +54,14 @@ func (t *Handler) Provision(ctx caddy.Context) error {
 	t.ctx = ctx
 	t.logger = ctx.Logger(t)
 
+	t.logger.Debug("provisioning TLS handler",
+		zap.Int("num_policies", len(t.ConnectionPolicies)),
+		zap.Strings("automation_subjects", t.automationSubjects))
+
 	// ensure there is at least one policy, which will act as default
 	if len(t.ConnectionPolicies) == 0 {
 		t.ConnectionPolicies = append(t.ConnectionPolicies, new(caddytls.ConnectionPolicy))
+		t.logger.Debug("created default connection policy")
 	}
 
 	err := t.ConnectionPolicies.Provision(ctx)
@@ -64,19 +69,31 @@ func (t *Handler) Provision(ctx caddy.Context) error {
 		return fmt.Errorf("setting up Handler connection policies: %v", err)
 	}
 
+	t.logger.Debug("TLS handler provisioned successfully")
 	return nil
 }
 
 // Handle handles the connections.
 func (t *Handler) Handle(cx *layer4.Connection, next layer4.Handler) error {
+	t.logger.Debug("TLS handler invoked",
+		zap.String("remote", cx.RemoteAddr().String()),
+		zap.String("local", cx.LocalAddr().String()))
+
 	// get the TLS config to use for this connection
 	tlsCfg := t.ConnectionPolicies.TLSConfig(t.ctx)
+
+	t.logger.Debug("got TLS config",
+		zap.Int("num_certificates", len(tlsCfg.Certificates)),
+		zap.Bool("has_get_certificate", tlsCfg.GetCertificate != nil))
 
 	// capture the ClientHello info when the handshake is performed
 	var clientHello ClientHelloInfo
 	underlyingGetConfigForClient := tlsCfg.GetConfigForClient
 	tlsCfg.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
 		clientHello.ClientHelloInfo = *hello
+		t.logger.Debug("received ClientHello",
+			zap.String("server_name", hello.ServerName),
+			zap.Strings("alpn", hello.SupportedProtos))
 		return underlyingGetConfigForClient(hello)
 	}
 
@@ -84,9 +101,13 @@ func (t *Handler) Handle(cx *layer4.Connection, next layer4.Handler) error {
 	// in cx, not cx.Conn; this is because we must read from the
 	// connection to perform the handshake, and cx might have some
 	// bytes already buffered need to be read first)
+	t.logger.Debug("starting TLS handshake")
 	tlsConn := tls.Server(cx, tlsCfg)
 	err := tlsConn.Handshake()
 	if err != nil {
+		t.logger.Error("TLS handshake failed",
+			zap.String("remote", cx.RemoteAddr().String()),
+			zap.Error(err))
 		return err
 	}
 	t.logger.Debug("terminated TLS",

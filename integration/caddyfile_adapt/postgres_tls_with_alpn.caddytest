@@ -1,9 +1,10 @@
 {
 	layer4 {
-		:8443 {
+		:5432 {
 			route {
 				tls {
 					connection_policy {
+						alpn postgresql h2 http/1.1
 					}
 				}
 				echo
@@ -18,14 +19,20 @@
 			"servers": {
 				"srv0": {
 					"listen": [
-						":8443"
+						":5432"
 					],
 					"routes": [
 						{
 							"handle": [
 								{
 									"connection_policies": [
-										{}
+										{
+											"alpn": [
+												"postgresql",
+												"h2",
+												"http/1.1"
+											]
+										}
 									],
 									"handler": "tls"
 								},

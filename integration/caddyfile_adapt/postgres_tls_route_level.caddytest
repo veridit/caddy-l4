@@ -1,6 +1,6 @@
 {
 	layer4 {
-		:8443 {
+		:5432 {
 			route {
 				tls {
 					connection_policy {
@@ -18,7 +18,7 @@
 			"servers": {
 				"srv0": {
 					"listen": [
-						":8443"
+						":5432"
 					],
 					"routes": [
 						{

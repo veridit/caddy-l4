@@ -74,9 +74,8 @@ func parseLayer4(d *caddyfile.Dispenser, existingVal any) (any, error) {
 
 // ParseCaddyfileNestedRoutes parses the Caddyfile tokens for nested named matcher sets, handlers and matching timeout,
 // composes a list of route configurations, and adjusts the matching timeout.
-func ParseCaddyfileNestedRoutes(d *caddyfile.Dispenser, routes *RouteList, matchingTimeout *caddy.Duration, tlsHandlerModule *any) error {
+func ParseCaddyfileNestedRoutes(d *caddyfile.Dispenser, routes *RouteList, matchingTimeout *caddy.Duration) error {
 	var hasMatchingTimeout bool
-	var hasTLS bool
 	matcherSetTokensByName, routeTokens := make(map[string][]caddyfile.Token), make([]caddyfile.Token, 0)
 	for nesting := d.Nesting(); d.NextBlock(nesting); {
 		optionName := d.Val()
@@ -99,19 +98,6 @@ func ParseCaddyfileNestedRoutes(d *caddyfile.Dispenser, routes *RouteList, match
 			*matchingTimeout, hasMatchingTimeout = caddy.Duration(dur), true
 		} else if optionName == "route" {
 			routeTokens = append(routeTokens, d.NextSegment()...)
-		} else if optionName == "tls" {
-			if tlsHandlerModule == nil {
-				return d.Err("tls directive is not supported in this context")
-			}
-			if hasTLS {
-				return d.Err("tls block already specified")
-			}
-			mod, err := caddyfile.UnmarshalModule(d.NewFromNextSegment(), "layer4.handlers.tls")
-			if err != nil {
-				return err
-			}
-			*tlsHandlerModule = mod
-			hasTLS = true
 		} else {
 			return d.ArgErr()
 		}
