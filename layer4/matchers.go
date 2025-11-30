@@ -378,7 +378,7 @@ func (m *MatchNot) Match(r *Connection) (bool, error) {
 func (m *MatchNot) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	d.Next() // consume wrapper name
 
-	matcherSet, err := ParseCaddyfileNestedMatcherSet(d)
+	matcherSet, err := ParseCaddyfileNestedMatcherSet(d, make(map[string]ConnMatcher))
 	if err != nil {
 		return err
 	}

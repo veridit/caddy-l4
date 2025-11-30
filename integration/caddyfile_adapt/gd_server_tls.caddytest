@@ -1,0 +1,34 @@
+{
+	layer4 {
+		:8443 {
+			tls internal
+			route {
+				echo
+			}
+		}
+	}
+}
+----------
+{
+	"apps": {
+		"layer4": {
+			"servers": {
+				"srv0": {
+					"listen": [
+						":8443"
+					],
+					"tls": {},
+					"routes": [
+						{
+							"handle": [
+								{
+									"handler": "echo"
+								}
+							]
+						}
+					]
+				}
+			}
+		}
+	}
+}
