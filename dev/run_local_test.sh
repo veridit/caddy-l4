@@ -153,7 +153,7 @@ echo ""
 # Test 2: TLS connection with internal cert on port 15432
 echo "========================================="
 print_status "Test 2: TLS PostgreSQL with internal cert (port 15432)"
-if PGSSLMODE=require PGHOST=localhost PGPORT=15432 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>/dev/null | grep -q "1"; then
+if PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=localhost PGPORT=15432 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>/dev/null | grep -q "1"; then
     print_success "Test 2 PASSED: TLS connection with internal cert works"
     ((TESTS_PASSED++))
 else
@@ -166,7 +166,7 @@ echo ""
 # Test 3: TLS connection with explicit connection_policy on port 15434
 echo "========================================="
 print_status "Test 3: TLS PostgreSQL with connection_policy (port 15434)"
-if PGSSLMODE=require PGHOST=localhost PGPORT=15434 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>/dev/null | grep -q "1"; then
+if PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=localhost PGPORT=15434 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>/dev/null | grep -q "1"; then
     print_success "Test 3 PASSED: TLS connection with connection_policy works"
     ((TESTS_PASSED++))
 else
