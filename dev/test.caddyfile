@@ -4,8 +4,8 @@
 	auto_https off
 	layer4 {
 		:15432 {
-			tls internal
 			route {
+				tls internal
 				proxy localhost:5432
 			}
 		}

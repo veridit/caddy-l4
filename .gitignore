@@ -2,6 +2,12 @@ _gitignore/
 
 .idea/
 
+# xcaddy related build files
+/buildenv_*
+
+# dev related build files
+/dev/build
+
 # Ignore files used by Aider AI tool
 .aider*
 !.aider.conf.yml
@@ -10,3 +16,4 @@ _gitignore/
 .cecli*
 !.cecli.conf.yml
 !.cecliignore
+

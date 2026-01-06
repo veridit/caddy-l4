@@ -35,12 +35,12 @@ cleanup() {
     print_status "Cleaning up..."
 
     # Stop Caddy if it's running
-    if [ -f caddy.pid ]; then
-        PID=$(cat caddy.pid)
+    if [ -f dev/build/caddy.pid ]; then
+        PID=$(cat dev/build/caddy.pid)
         if ps -p $PID > /dev/null 2>&1; then
             print_status "Stopping Caddy (PID: $PID)..."
             kill $PID 2>/dev/null || true
-            rm -f caddy.pid
+            rm -f dev/build/caddy.pid
         fi
     fi
 
@@ -97,7 +97,7 @@ fi
 # Step 3: Build Caddy with caddy-l4
 print_status "Building Caddy with caddy-l4..."
 
-if xcaddy build --with github.com/mholt/caddy-l4=. > $OUTPUT_REDIRECT 2>&1; then
+if xcaddy build --with github.com/mholt/caddy-l4=. --output dev/build/caddy > $OUTPUT_REDIRECT 2>&1; then
     print_success "Caddy built successfully"
 else
     print_error "Failed to build Caddy"
@@ -108,19 +108,19 @@ fi
 print_status "Starting Caddy with test configuration..."
 
 # Start Caddy in background and save PID
-./caddy run --config dev/test.caddyfile > caddy.log 2>&1 &
+./dev/build/caddy run --config dev/test.caddyfile > dev/build/caddy.log 2>&1 &
 CADDY_PID=$!
-echo $CADDY_PID > caddy.pid
+echo $CADDY_PID > dev/build/caddy.pid
 
 # Wait for Caddy to start
 sleep 3
 
 if ! ps -p $CADDY_PID > /dev/null 2>&1; then
     print_error "Caddy failed to start"
-    if [ -f caddy.log ]; then
+    if [ -f dev/build/caddy.log ]; then
         echo "-----------------------------------"
         echo "Caddy Log Output:"
-        cat caddy.log
+        cat dev/build/caddy.log
         echo "-----------------------------------"
     fi
     exit 1
@@ -152,13 +152,12 @@ echo ""
 
 # Test 2: TLS connection with internal cert on port 15432
 echo "========================================="
-print_status "Test 2: TLS PostgreSQL with internal cert (port 15432)"
+print_status "Test 2: TLS PostgreSQL with internal cert (port 15432, PGSSLMODE=require - no cert verification)"
 if PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=localhost PGPORT=15432 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>/dev/null | grep -q "1"; then
-    print_success "Test 2 PASSED: TLS connection with internal cert works"
+    print_success "Test 2 PASSED: TLS negotiation with internal cert works (no verification)"
     ((TESTS_PASSED++))
 else
-    print_error "Test 2 FAILED: TLS connection failed"
-    print_warning "This might be expected if internal cert is not trusted"
+    print_error "Test 2 FAILED: TLS negotiation failed"
     ((TESTS_FAILED++))
 fi
 echo ""
@@ -180,10 +179,10 @@ print_status "Checking Caddy logs..."
 echo ""
 echo "Recent Caddy logs (last 20 lines):"
 echo "-----------------------------------"
-if [ -f caddy.log ]; then
-    tail -20 caddy.log
+if [ -f dev/build/caddy.log ]; then
+    tail -20 dev/build/caddy.log
 else
-    print_warning "No caddy.log file found"
+    print_warning "No dev/build/caddy.log file found"
 fi
 echo ""
 
