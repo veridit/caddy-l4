@@ -90,7 +90,8 @@ cd "$SCRIPT_DIR/.."
 if psql -h localhost -U $USER -d postgres -f dev/setup_test_db.sql > $OUTPUT_REDIRECT 2>&1; then
     print_success "Test database created"
 else
-    print_warning "Database setup may have failed, but continuing..."
+    print_error "Failed to set up test database"
+    exit 1
 fi
 
 # Step 3: Build Caddy with caddy-l4
