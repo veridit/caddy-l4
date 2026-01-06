@@ -50,6 +50,14 @@ cleanup() {
 # Set up trap to cleanup on script exit
 trap cleanup EXIT INT TERM
 
+# Check debug mode
+if [ "${DEBUG}" = "1" ]; then
+    print_status "Debug mode enabled"
+    OUTPUT_REDIRECT="/dev/stdout"
+else
+    OUTPUT_REDIRECT="/dev/null"
+fi
+
 # Step 1: Check prerequisites
 print_status "Checking prerequisites..."
 
@@ -79,7 +87,7 @@ print_status "Setting up test database..."
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$SCRIPT_DIR/.."
 
-if psql -h localhost -U $USER -d postgres -f dev/setup_test_db.sql > /dev/null 2>&1; then
+if psql -h localhost -U $USER -d postgres -f dev/setup_test_db.sql > $OUTPUT_REDIRECT 2>&1; then
     print_success "Test database created"
 else
     print_warning "Database setup may have failed, but continuing..."
@@ -88,7 +96,7 @@ fi
 # Step 3: Build Caddy with caddy-l4
 print_status "Building Caddy with caddy-l4..."
 
-if xcaddy build --with github.com/mholt/caddy-l4=. > /dev/null 2>&1; then
+if xcaddy build --with github.com/mholt/caddy-l4=. > $OUTPUT_REDIRECT 2>&1; then
     print_success "Caddy built successfully"
 else
     print_error "Failed to build Caddy"
@@ -108,6 +116,12 @@ sleep 3
 
 if ! ps -p $CADDY_PID > /dev/null 2>&1; then
     print_error "Caddy failed to start"
+    if [ -f caddy.log ]; then
+        echo "-----------------------------------"
+        echo "Caddy Log Output:"
+        cat caddy.log
+        echo "-----------------------------------"
+    fi
     exit 1
 fi
 
