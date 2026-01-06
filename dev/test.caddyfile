@@ -2,10 +2,15 @@
 	debug
 	admin localhost:2019
 	auto_https off
+
 	layer4 {
 		:15432 {
 			route {
-				tls internal
+				tls {
+					connection_policy {
+						alpn postgresql
+					}
+				}
 				proxy localhost:5432
 			}
 		}
@@ -18,10 +23,20 @@
 			route {
 				tls {
 					connection_policy {
+						alpn postgresql
 					}
 				}
 				proxy localhost:5432
 			}
 		}
 	}
+}
+
+# Trigger internal certificate issuance for localhost.
+# The layer4 TLS handler will reuse this cert via the global TLS app.
+https://localhost:9443 {
+	tls internal {
+		on_demand
+	}
+	respond "OK"
 }
