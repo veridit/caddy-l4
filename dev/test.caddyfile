@@ -6,12 +6,12 @@
 		:15432 {
 			tls internal
 			route {
-				echo
+				proxy localhost:5432
 			}
 		}
 		:15433 {
 			route {
-				echo
+				proxy localhost:5432
 			}
 		}
 		:15434 {
@@ -20,7 +20,7 @@
 					connection_policy {
 					}
 				}
-				echo
+				proxy localhost:5432
 			}
 		}
 	}
