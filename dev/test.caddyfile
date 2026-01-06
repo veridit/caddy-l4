@@ -1,7 +1,32 @@
 {
 	debug
 	admin localhost:2019
-	auto_https off
+	auto_https disable_redirects
+
+	# Global listener_wrappers to intercept PostgreSQL
+	# TLS-terminated connections work on all ports
+	# Cleartext connections only work if no TLS is present (port 8080)
+	servers {
+		listener_wrappers {
+			layer4 {
+				# Route 1: TLS-terminated postgres (for HTTPS servers on any port)
+				@postgres_tls {
+					tls
+					postgres
+				}
+				route @postgres_tls {
+					# TLS already terminated by HTTPS server
+					proxy localhost:5432
+				}
+
+				# Route 2: Cleartext postgres (will match on port 8080, not on 9080/9443)
+				@postgres_cleartext postgres
+				route @postgres_cleartext {
+					proxy localhost:5432
+				}
+			}
+		}
+	}
 
 	layer4 {
 		:15432 {
@@ -53,11 +78,23 @@
 	}
 }
 
+# HTTP server for cleartext PostgreSQL over HTTP (port 8080)
+# The global listener_wrapper will intercept cleartext PostgreSQL connections.
+:8080 {
+	respond "OK"
+}
+
+# HTTPS server for TLS PostgreSQL (ports 9080 HTTP, 9443 HTTPS)
 # Trigger internal certificate issuance for localhost and local.statbus.org.
 # The layer4 TLS handler will reuse these certs via the global TLS app.
-https://localhost:9443, https://local.statbus.org:9443 {
+# Both HTTP (9080) and HTTPS (9443) ports, listener_wrapper blocks cleartext postgres.
+localhost:9080, local.statbus.org:9080,
+localhost:9443, local.statbus.org:9443 {
 	tls internal {
 		on_demand
+		# Allow PostgreSQL ALPN alongside HTTPS protocols
+		alpn postgresql h3 h2 http/1.1
 	}
+
 	respond "OK"
 }
