@@ -54,8 +54,12 @@ trap cleanup EXIT INT TERM
 if [ "${DEBUG}" = "1" ]; then
     print_status "Debug mode enabled"
     OUTPUT_REDIRECT="/dev/stdout"
+    PSQL_OUTPUT="/dev/stdout"
+    PSQL_STDERR="2>&1"
 else
     OUTPUT_REDIRECT="/dev/null"
+    PSQL_OUTPUT="/dev/null"
+    PSQL_STDERR="2>/dev/null"
 fi
 
 # Step 1: Check prerequisites
@@ -141,7 +145,16 @@ TESTS_FAILED=0
 # Test 1: Cleartext connection on port 15433
 echo "========================================="
 print_status "Test 1: Cleartext PostgreSQL (port 15433)"
-if PGHOST=localhost PGPORT=15433 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>/dev/null | grep -q "1"; then
+if [ "${DEBUG}" = "1" ]; then
+    print_status "Running: PGHOST=localhost PGPORT=15433 PGUSER=caddy_test psql -d caddy_test -c 'SELECT 1 as test;' -t"
+    PGHOST=localhost PGPORT=15433 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>&1
+    TEST_RESULT=$?
+else
+    PGHOST=localhost PGPORT=15433 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>/dev/null | grep -q "1"
+    TEST_RESULT=$?
+fi
+
+if [ $TEST_RESULT -eq 0 ]; then
     print_success "Test 1 PASSED: Cleartext connection works"
     ((TESTS_PASSED++))
 else
@@ -153,7 +166,16 @@ echo ""
 # Test 2: TLS connection with internal cert on port 15432
 echo "========================================="
 print_status "Test 2: TLS PostgreSQL with internal cert (port 15432, PGSSLMODE=require - no cert verification)"
-if PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=localhost PGPORT=15432 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>/dev/null | grep -q "1"; then
+if [ "${DEBUG}" = "1" ]; then
+    print_status "Running: PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=localhost PGPORT=15432 PGUSER=caddy_test psql -d caddy_test -c 'SELECT 1 as test;' -t"
+    PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=localhost PGPORT=15432 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>&1
+    TEST_RESULT=$?
+else
+    PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=localhost PGPORT=15432 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>/dev/null | grep -q "1"
+    TEST_RESULT=$?
+fi
+
+if [ $TEST_RESULT -eq 0 ]; then
     print_success "Test 2 PASSED: TLS negotiation with internal cert works (no verification)"
     ((TESTS_PASSED++))
 else
@@ -165,7 +187,15 @@ echo ""
 # Test 3: TLS connection with explicit connection_policy on port 15434
 echo "========================================="
 print_status "Test 3: TLS PostgreSQL with connection_policy (port 15434)"
-if PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=localhost PGPORT=15434 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>/dev/null | grep -q "1"; then
+if [ "${DEBUG}" = "1" ]; then
+    print_status "Running: PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=localhost PGPORT=15434 PGUSER=caddy_test psql -d caddy_test -c 'SELECT 1 as test;' -t"
+    PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=localhost PGPORT=15434 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>&1
+    TEST_RESULT=$?
+else
+    PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=localhost PGPORT=15434 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>/dev/null | grep -q "1"
+    TEST_RESULT=$?
+fi
+if [ $TEST_RESULT -eq 0 ]; then
     print_success "Test 3 PASSED: TLS connection with connection_policy works"
     ((TESTS_PASSED++))
 else
@@ -177,7 +207,15 @@ echo ""
 # Test 4: TLS connection with SNI routing on port 15435
 echo "========================================="
 print_status "Test 4: TLS PostgreSQL with SNI routing (port 15435, local.statbus.org)"
-if PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=local.statbus.org PGPORT=15435 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>/dev/null | grep -q "1"; then
+if [ "${DEBUG}" = "1" ]; then
+    print_status "Running: PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=local.statbus.org PGPORT=15435 PGUSER=caddy_test psql -d caddy_test -c 'SELECT 1 as test;' -t"
+    PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=local.statbus.org PGPORT=15435 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>&1
+    TEST_RESULT=$?
+else
+    PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=local.statbus.org PGPORT=15435 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>/dev/null | grep -q "1"
+    TEST_RESULT=$?
+fi
+if [ $TEST_RESULT -eq 0 ]; then
     # Check if SNI was logged
     if grep -q '"server_name":"local\.statbus\.org"' dev/build/caddy.log; then
         print_success "Test 4 PASSED: SNI routing works and server_name logged"
@@ -195,7 +233,15 @@ echo ""
 # Test 5: PostgreSQL over HTTPS port with listener_wrappers (port 9443)
 echo "========================================="
 print_status "Test 5: PostgreSQL over HTTPS port via listener_wrappers (port 9443, local.statbus.org)"
-if PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=local.statbus.org PGPORT=9443 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>/dev/null | grep -q "1"; then
+if [ "${DEBUG}" = "1" ]; then
+    print_status "Running: PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=local.statbus.org PGPORT=9443 PGUSER=caddy_test psql -d caddy_test -c 'SELECT 1 as test;' -t"
+    PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=local.statbus.org PGPORT=9443 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>&1
+    TEST_RESULT=$?
+else
+    PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=local.statbus.org PGPORT=9443 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>/dev/null | grep -q "1"
+    TEST_RESULT=$?
+fi
+if [ $TEST_RESULT -eq 0 ]; then
     # Check if postgres matcher was used in listener wrapper
     if grep -q 'layer4.matchers.postgres' dev/build/caddy.log && grep -q '"handling connection within listener wrapper"' dev/build/caddy.log; then
         print_success "Test 5 PASSED: PostgreSQL multiplexed on HTTPS port"
@@ -213,7 +259,15 @@ echo ""
 # Test 6: Cleartext PostgreSQL over HTTP port (port 8080)
 echo "========================================="
 print_status "Test 6: Cleartext PostgreSQL over HTTP port via listener_wrappers (port 8080)"
-if PGHOST=localhost PGPORT=8080 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>/dev/null | grep -q "1"; then
+if [ "${DEBUG}" = "1" ]; then
+    print_status "Running: PGHOST=localhost PGPORT=8080 PGUSER=caddy_test psql -d caddy_test -c 'SELECT 1 as test;' -t"
+    PGHOST=localhost PGPORT=8080 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>&1
+    TEST_RESULT=$?
+else
+    PGHOST=localhost PGPORT=8080 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>/dev/null | grep -q "1"
+    TEST_RESULT=$?
+fi
+if [ $TEST_RESULT -eq 0 ]; then
     print_success "Test 6 PASSED: Cleartext PostgreSQL over HTTP port works"
     ((TESTS_PASSED++))
 else
@@ -225,26 +279,40 @@ echo ""
 # Test 7: Verify cleartext PostgreSQL does NOT work over HTTPS port (should fail)
 echo "========================================="
 print_status "Test 7: Verify cleartext PostgreSQL blocked on HTTPS port (should fail)"
-# Use a short timeout to avoid hanging
-if timeout 2 bash -c "PGHOST=localhost PGPORT=9443 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>/dev/null | grep -q '1'" 2>/dev/null; then
-    print_error "Test 7 FAILED: Cleartext PostgreSQL should NOT work on HTTPS port"
-    ((TESTS_FAILED++))
+if [ "${DEBUG}" = "1" ]; then
+    print_status "Running: timeout 2 PGHOST=localhost PGPORT=9443 PGUSER=caddy_test psql -d caddy_test -c 'SELECT 1 as test;' -t (should fail)"
+    timeout 2 bash -c "PGHOST=localhost PGPORT=9443 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>&1"
+    TEST_RESULT=$?
 else
+    timeout 2 bash -c "PGHOST=localhost PGPORT=9443 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>/dev/null | grep -q '1'" 2>/dev/null
+    TEST_RESULT=$?
+fi
+if [ $TEST_RESULT -ne 0 ]; then
     print_success "Test 7 PASSED: Cleartext PostgreSQL correctly blocked on HTTPS port"
     ((TESTS_PASSED++))
+else
+    print_error "Test 7 FAILED: Cleartext PostgreSQL should NOT work on HTTPS port"
+    ((TESTS_FAILED++))
 fi
 echo ""
 
 # Test 8: Verify cleartext PostgreSQL blocked on HTTP redirect port (should fail)
 echo "========================================="
 print_status "Test 8: Verify cleartext PostgreSQL blocked on HTTP redirect port 9080 (should fail)"
-# Use a short timeout to avoid hanging
-if timeout 2 bash -c "PGHOST=localhost PGPORT=9080 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>/dev/null | grep -q '1'" 2>/dev/null; then
-    print_error "Test 8 FAILED: Cleartext PostgreSQL should NOT work on HTTP redirect port"
-    ((TESTS_FAILED++))
+if [ "${DEBUG}" = "1" ]; then
+    print_status "Running: timeout 2 PGHOST=localhost PGPORT=9080 PGUSER=caddy_test psql -d caddy_test -c 'SELECT 1 as test;' -t (should fail)"
+    timeout 2 bash -c "PGHOST=localhost PGPORT=9080 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>&1"
+    TEST_RESULT=$?
 else
+    timeout 2 bash -c "PGHOST=localhost PGPORT=9080 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>/dev/null | grep -q '1'" 2>/dev/null
+    TEST_RESULT=$?
+fi
+if [ $TEST_RESULT -ne 0 ]; then
     print_success "Test 8 PASSED: Cleartext PostgreSQL correctly blocked on HTTP redirect port"
     ((TESTS_PASSED++))
+else
+    print_error "Test 8 FAILED: Cleartext PostgreSQL should NOT work on HTTP redirect port"
+    ((TESTS_FAILED++))
 fi
 echo ""
 
