@@ -6,3 +6,7 @@ _gitignore/
 .aider*
 !.aider.conf.yml
 !.aiderignore
+# Ignore files used by Cecli AI tool (Aider fork)
+.cecli*
+!.cecli.conf.yml
+!.cecliignore
