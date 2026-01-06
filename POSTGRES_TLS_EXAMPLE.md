@@ -52,6 +52,10 @@ layer4 {
         route {
             tls {
                 connection_policy {
+                    # PostgreSQL clients using direct TLS negotiation will offer
+                    # the "postgresql" ALPN protocol during the handshake.
+                    alpn postgresql
+
                     # Uses default certificate from global TLS app
                 }
             }
@@ -91,6 +95,10 @@ layer4 {
         route {
             tls {
                 connection_policy {
+                    # PostgreSQL clients using direct TLS negotiation will offer
+                    # the "postgresql" ALPN protocol during the handshake.
+                    alpn postgresql
+
                     # Will use the internal cert from above
                 }
             }
@@ -140,6 +148,9 @@ layer4 {
         route @is_tls {
             tls {
                 connection_policy {
+                    # PostgreSQL clients using direct TLS negotiation will offer
+                    # the "postgresql" ALPN protocol during the handshake.
+                    alpn postgresql
                 }
             }
             # After TLS termination, match on decrypted protocol
@@ -187,6 +198,9 @@ Your Caddyfile would be:
 https://:443 {
     tls internal {
         on_demand
+
+        # Allow PostgreSQL clients (ALPN) alongside normal HTTPS traffic.
+        alpn postgresql h3 h2 http/1.1
     }
     
     # Layer4 listener_wrapper for PostgreSQL over HTTPS
@@ -276,6 +290,11 @@ Look for these log messages:
 - The TLS handler is configured in the route
 - Certificates are available
 - Client trusts the certificate (or use `PGSSLMODE=require` without verification for testing)
+
+### Issue: `tls: client requested unsupported application protocols (["postgresql"])`
+**Solution:** Your PostgreSQL client is offering the `postgresql` ALPN protocol (common with `PGSSLNEGOTIATION=direct`). Configure your TLS termination to allow it:
+- For layer4 TLS termination: add `alpn postgresql` inside the `connection_policy` block
+- For HTTP/HTTPS TLS termination: add `alpn postgresql ...` inside the site’s `tls` block
 
 ### Issue: Connection times out with no logs
 **Solution:** The matcher isn't matching. Check:
