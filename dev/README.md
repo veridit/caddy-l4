@@ -101,15 +101,19 @@ To test with actual PostgreSQL connections instead of `echo`:
 
 1. Make sure PostgreSQL is running on localhost:5432
 2. Create test database: `psql -U postgres -f setup_test_db.sql`
-3. Modify `test.caddyfile` to use `proxy localhost:5432` instead of `echo`
-4. Test with psql:
+3. Test with psql:
    ```bash
    # Cleartext
    PGHOST=localhost PGPORT=15433 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1;'
    
    # TLS
-   PGSSLMODE=require PGHOST=localhost PGPORT=15432 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1;'
+   PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=localhost PGPORT=15432 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1;'
    ```
+   Notice that PGSSLNEGOTIATION=direct is required for psql to use standard SSL handshake,
+   that is required by caddy tls, and that PGSSLSNI=1 is required to set the SSL SNI host header
+   to the value of PGHOST, for routing based on domain/host-name, and finally PGSSLMODE=require
+   requires, but does not verify the cert, as opposed go postgres:src/interfaces/libpq/fe-connect.c
+   documentation, for that "verify-ca" or "verify-full" is required.
 
 ## Troubleshooting
 

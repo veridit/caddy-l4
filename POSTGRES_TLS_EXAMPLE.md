@@ -242,12 +242,12 @@ PGHOST=localhost PGPORT=5432 PGUSER=myuser psql -d mydb -c 'SELECT 1;'
 
 ### Test TLS Connection
 ```bash
-PGSSLMODE=require PGHOST=localhost PGPORT=5432 PGUSER=myuser psql -d mydb -c 'SELECT 1;'
+PGSSLNEGOTIATION=direct PGSSLMODE=require PGHOST=localhost PGPORT=5432 PGUSER=myuser psql -d mydb -c 'SELECT 1;'
 ```
 
 ### Test with SNI (Server Name Indication)
 ```bash
-PGSSLMODE=require PGSSLSNI=1 PGHOST=example.com PGPORT=5432 PGUSER=myuser psql -d mydb -c 'SELECT 1;'
+PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=example.com PGPORT=5432 PGUSER=myuser psql -d mydb -c 'SELECT 1;'
 ```
 
 ## Debugging
