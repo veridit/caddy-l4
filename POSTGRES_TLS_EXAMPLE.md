@@ -192,6 +192,21 @@ Your Caddyfile would be:
 ```caddyfile
 {
     debug
+    # Layer4 listener_wrapper for PostgreSQL over HTTPS
+    servers {
+        listener_wrappers {
+            layer4 {
+                @postgres_tls {
+                    tls
+                    postgres
+                }
+                route @postgres_tls {
+                    # TLS already terminated by HTTPS server
+                    proxy db:5432
+                }
+            }
+        }
+    }
 }
 
 # Port 3021 maps to :443 - HTTPS server handles TLS
@@ -202,21 +217,7 @@ https://:443 {
         # Allow PostgreSQL clients (ALPN) alongside normal HTTPS traffic.
         alpn postgresql h3 h2 http/1.1
     }
-    
-    # Layer4 listener_wrapper for PostgreSQL over HTTPS
-    listener_wrappers {
-        layer4 {
-            @postgres_tls {
-                tls
-                postgres
-            }
-            route @postgres_tls {
-                # TLS already terminated by HTTPS server
-                proxy db:5432
-            }
-        }
-    }
-    
+        
     # Regular HTTPS responses
     respond "OK"
 }
