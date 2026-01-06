@@ -174,6 +174,24 @@ else
 fi
 echo ""
 
+# Test 4: TLS connection with SNI routing on port 15435
+echo "========================================="
+print_status "Test 4: TLS PostgreSQL with SNI routing (port 15435, local.statbus.org)"
+if PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=local.statbus.org PGPORT=15435 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>/dev/null | grep -q "1"; then
+    # Check if SNI was logged
+    if grep -q '"server_name":"local\.statbus\.org"' dev/build/caddy.log; then
+        print_success "Test 4 PASSED: SNI routing works and server_name logged"
+        ((TESTS_PASSED++))
+    else
+        print_error "Test 4 FAILED: Connection succeeded but SNI not found in logs"
+        ((TESTS_FAILED++))
+    fi
+else
+    print_error "Test 4 FAILED: TLS connection with SNI routing failed"
+    ((TESTS_FAILED++))
+fi
+echo ""
+
 # Step 6: Check Caddy logs for errors
 print_status "Checking Caddy logs..."
 echo ""

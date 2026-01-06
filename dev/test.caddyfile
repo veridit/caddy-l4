@@ -29,12 +29,33 @@
 				proxy localhost:5432
 			}
 		}
+		:15435 {
+			@sni tls {
+				sni local.statbus.org
+			}
+			route @sni {
+				tls {
+					connection_policy {
+						alpn postgresql
+					}
+				}
+				proxy localhost:5432
+			}
+			route {
+				tls {
+					connection_policy {
+						alpn postgresql
+					}
+				}
+				proxy localhost:5432
+			}
+		}
 	}
 }
 
-# Trigger internal certificate issuance for localhost.
-# The layer4 TLS handler will reuse this cert via the global TLS app.
-https://localhost:9443 {
+# Trigger internal certificate issuance for localhost and local.statbus.org.
+# The layer4 TLS handler will reuse these certs via the global TLS app.
+https://localhost:9443, https://local.statbus.org:9443 {
 	tls internal {
 		on_demand
 	}
