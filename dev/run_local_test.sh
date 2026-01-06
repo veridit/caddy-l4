@@ -30,6 +30,48 @@ print_warning() {
     echo -e "${YELLOW}[WARNING]${NC} $1"
 }
 
+# Function to generate random password
+generate_password() {
+    openssl rand -base64 32 | tr -d "=+/" | cut -c1-32
+}
+
+# Set script directory
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+# Check if .env exists, if not create it
+if [ ! -f "$SCRIPT_DIR/.env" ]; then
+    print_status "No .env file found, generating one..."
+    
+    # Generate random password
+    GENERATED_PASSWORD=$(generate_password)
+    
+    # Create .env file
+    cat > "$SCRIPT_DIR/.env" << EOF
+# PostgreSQL test configuration
+# Auto-generated on $(date)
+
+# PostgreSQL test user
+PGUSER=caddy_test
+
+# PostgreSQL test password (auto-generated)
+PGPASSWORD=$GENERATED_PASSWORD
+
+# PostgreSQL test database
+PGDATABASE=caddy_test
+EOF
+    
+    print_success "Generated .env file with random password"
+fi
+
+# Load environment variables from .env
+if [ -f "$SCRIPT_DIR/.env" ]; then
+    print_status "Loading configuration from .env"
+    export $(grep -v '^#' "$SCRIPT_DIR/.env" | xargs)
+else
+    print_error ".env file not found"
+    exit 1
+fi
+
 # Function to cleanup on exit
 cleanup() {
     print_status "Cleaning up..."
@@ -88,10 +130,16 @@ print_success "Prerequisites check passed"
 print_status "Setting up test database..."
 
 # Change to parent directory for database setup
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$SCRIPT_DIR/.."
 
-if psql -h localhost -U $USER -d postgres -f dev/setup_test_db.sql > $OUTPUT_REDIRECT 2>&1; then
+# Export password for psql
+export PGPASSWORD_ADMIN="${PGPASSWORD_ADMIN:-}"
+
+if psql -h localhost -U $USER -d postgres \
+    -v pg_user="$PGUSER" \
+    -v pg_password="$PGPASSWORD" \
+    -v pg_database="$PGDATABASE" \
+    -f dev/setup_test_db.sql > $OUTPUT_REDIRECT 2>&1; then
     print_success "Test database created"
 else
     print_error "Failed to set up test database"
@@ -146,11 +194,11 @@ TESTS_FAILED=0
 echo "========================================="
 print_status "Test 1: Cleartext PostgreSQL (port 15433)"
 if [ "${DEBUG}" = "1" ]; then
-    print_status "Running: PGHOST=localhost PGPORT=15433 PGUSER=caddy_test psql -d caddy_test -c 'SELECT 1 as test;' -t"
-    PGHOST=localhost PGPORT=15433 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>&1
+    print_status "Running: PGHOST=localhost PGPORT=15433 PGUSER=$PGUSER psql -d $PGDATABASE -c 'SELECT 1 as test;' -t"
+    PGHOST=localhost PGPORT=15433 PGUSER=$PGUSER PGPASSWORD=$PGPASSWORD psql -d $PGDATABASE -c 'SELECT 1 as test;' -t 2>&1
     TEST_RESULT=$?
 else
-    PGHOST=localhost PGPORT=15433 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>/dev/null | grep -q "1"
+    PGHOST=localhost PGPORT=15433 PGUSER=$PGUSER PGPASSWORD=$PGPASSWORD psql -d $PGDATABASE -c 'SELECT 1 as test;' -t 2>/dev/null | grep -q "1"
     TEST_RESULT=$?
 fi
 
@@ -167,11 +215,11 @@ echo ""
 echo "========================================="
 print_status "Test 2: TLS PostgreSQL with internal cert (port 15432, PGSSLMODE=require - no cert verification)"
 if [ "${DEBUG}" = "1" ]; then
-    print_status "Running: PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=localhost PGPORT=15432 PGUSER=caddy_test psql -d caddy_test -c 'SELECT 1 as test;' -t"
-    PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=localhost PGPORT=15432 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>&1
+    print_status "Running: PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=localhost PGPORT=15432 PGUSER=$PGUSER psql -d $PGDATABASE -c 'SELECT 1 as test;' -t"
+    PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=localhost PGPORT=15432 PGUSER=$PGUSER PGPASSWORD=$PGPASSWORD psql -d $PGDATABASE -c 'SELECT 1 as test;' -t 2>&1
     TEST_RESULT=$?
 else
-    PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=localhost PGPORT=15432 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>/dev/null | grep -q "1"
+    PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=localhost PGPORT=15432 PGUSER=$PGUSER PGPASSWORD=$PGPASSWORD psql -d $PGDATABASE -c 'SELECT 1 as test;' -t 2>/dev/null | grep -q "1"
     TEST_RESULT=$?
 fi
 
@@ -188,11 +236,11 @@ echo ""
 echo "========================================="
 print_status "Test 3: TLS PostgreSQL with connection_policy (port 15434)"
 if [ "${DEBUG}" = "1" ]; then
-    print_status "Running: PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=localhost PGPORT=15434 PGUSER=caddy_test psql -d caddy_test -c 'SELECT 1 as test;' -t"
-    PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=localhost PGPORT=15434 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>&1
+    print_status "Running: PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=localhost PGPORT=15434 PGUSER=$PGUSER psql -d $PGDATABASE -c 'SELECT 1 as test;' -t"
+    PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=localhost PGPORT=15434 PGUSER=$PGUSER PGPASSWORD=$PGPASSWORD psql -d $PGDATABASE -c 'SELECT 1 as test;' -t 2>&1
     TEST_RESULT=$?
 else
-    PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=localhost PGPORT=15434 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>/dev/null | grep -q "1"
+    PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=localhost PGPORT=15434 PGUSER=$PGUSER PGPASSWORD=$PGPASSWORD psql -d $PGDATABASE -c 'SELECT 1 as test;' -t 2>/dev/null | grep -q "1"
     TEST_RESULT=$?
 fi
 if [ $TEST_RESULT -eq 0 ]; then
@@ -208,11 +256,11 @@ echo ""
 echo "========================================="
 print_status "Test 4: TLS PostgreSQL with SNI routing (port 15435, local.statbus.org)"
 if [ "${DEBUG}" = "1" ]; then
-    print_status "Running: PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=local.statbus.org PGPORT=15435 PGUSER=caddy_test psql -d caddy_test -c 'SELECT 1 as test;' -t"
-    PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=local.statbus.org PGPORT=15435 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>&1
+    print_status "Running: PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=local.statbus.org PGPORT=15435 PGUSER=$PGUSER psql -d $PGDATABASE -c 'SELECT 1 as test;' -t"
+    PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=local.statbus.org PGPORT=15435 PGUSER=$PGUSER PGPASSWORD=$PGPASSWORD psql -d $PGDATABASE -c 'SELECT 1 as test;' -t 2>&1
     TEST_RESULT=$?
 else
-    PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=local.statbus.org PGPORT=15435 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>/dev/null | grep -q "1"
+    PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=local.statbus.org PGPORT=15435 PGUSER=$PGUSER PGPASSWORD=$PGPASSWORD psql -d $PGDATABASE -c 'SELECT 1 as test;' -t 2>/dev/null | grep -q "1"
     TEST_RESULT=$?
 fi
 if [ $TEST_RESULT -eq 0 ]; then
@@ -234,11 +282,11 @@ echo ""
 echo "========================================="
 print_status "Test 5: PostgreSQL over HTTPS port via listener_wrappers (port 9443, local.statbus.org)"
 if [ "${DEBUG}" = "1" ]; then
-    print_status "Running: PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=local.statbus.org PGPORT=9443 PGUSER=caddy_test psql -d caddy_test -c 'SELECT 1 as test;' -t"
-    PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=local.statbus.org PGPORT=9443 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>&1
+    print_status "Running: PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=local.statbus.org PGPORT=9443 PGUSER=$PGUSER psql -d $PGDATABASE -c 'SELECT 1 as test;' -t"
+    PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=local.statbus.org PGPORT=9443 PGUSER=$PGUSER PGPASSWORD=$PGPASSWORD psql -d $PGDATABASE -c 'SELECT 1 as test;' -t 2>&1
     TEST_RESULT=$?
 else
-    PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=local.statbus.org PGPORT=9443 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>/dev/null | grep -q "1"
+    PGSSLNEGOTIATION=direct PGSSLMODE=require PGSSLSNI=1 PGHOST=local.statbus.org PGPORT=9443 PGUSER=$PGUSER PGPASSWORD=$PGPASSWORD psql -d $PGDATABASE -c 'SELECT 1 as test;' -t 2>/dev/null | grep -q "1"
     TEST_RESULT=$?
 fi
 if [ $TEST_RESULT -eq 0 ]; then
@@ -260,11 +308,11 @@ echo ""
 echo "========================================="
 print_status "Test 6: Cleartext PostgreSQL over HTTP port via listener_wrappers (port 8080)"
 if [ "${DEBUG}" = "1" ]; then
-    print_status "Running: PGHOST=localhost PGPORT=8080 PGUSER=caddy_test psql -d caddy_test -c 'SELECT 1 as test;' -t"
-    PGHOST=localhost PGPORT=8080 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>&1
+    print_status "Running: PGHOST=localhost PGPORT=8080 PGUSER=$PGUSER psql -d $PGDATABASE -c 'SELECT 1 as test;' -t"
+    PGHOST=localhost PGPORT=8080 PGUSER=$PGUSER PGPASSWORD=$PGPASSWORD psql -d $PGDATABASE -c 'SELECT 1 as test;' -t 2>&1
     TEST_RESULT=$?
 else
-    PGHOST=localhost PGPORT=8080 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>/dev/null | grep -q "1"
+    PGHOST=localhost PGPORT=8080 PGUSER=$PGUSER PGPASSWORD=$PGPASSWORD psql -d $PGDATABASE -c 'SELECT 1 as test;' -t 2>/dev/null | grep -q "1"
     TEST_RESULT=$?
 fi
 if [ $TEST_RESULT -eq 0 ]; then
@@ -280,11 +328,11 @@ echo ""
 echo "========================================="
 print_status "Test 7: Verify cleartext PostgreSQL blocked on HTTPS port (should fail)"
 if [ "${DEBUG}" = "1" ]; then
-    print_status "Running: timeout 2 PGHOST=localhost PGPORT=9443 PGUSER=caddy_test psql -d caddy_test -c 'SELECT 1 as test;' -t (should fail)"
-    timeout 2 bash -c "PGHOST=localhost PGPORT=9443 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>&1"
+    print_status "Running: timeout 2 PGHOST=localhost PGPORT=9443 PGUSER=$PGUSER psql -d $PGDATABASE -c 'SELECT 1 as test;' -t (should fail)"
+    timeout 2 bash -c "PGHOST=localhost PGPORT=9443 PGUSER=$PGUSER PGPASSWORD=$PGPASSWORD psql -d $PGDATABASE -c 'SELECT 1 as test;' -t 2>&1"
     TEST_RESULT=$?
 else
-    timeout 2 bash -c "PGHOST=localhost PGPORT=9443 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>/dev/null | grep -q '1'" 2>/dev/null
+    timeout 2 bash -c "PGHOST=localhost PGPORT=9443 PGUSER=$PGUSER PGPASSWORD=$PGPASSWORD psql -d $PGDATABASE -c 'SELECT 1 as test;' -t 2>/dev/null | grep -q '1'" 2>/dev/null
     TEST_RESULT=$?
 fi
 if [ $TEST_RESULT -ne 0 ]; then
@@ -300,11 +348,11 @@ echo ""
 echo "========================================="
 print_status "Test 8: Verify cleartext PostgreSQL blocked on HTTP redirect port 9080 (should fail)"
 if [ "${DEBUG}" = "1" ]; then
-    print_status "Running: timeout 2 PGHOST=localhost PGPORT=9080 PGUSER=caddy_test psql -d caddy_test -c 'SELECT 1 as test;' -t (should fail)"
-    timeout 2 bash -c "PGHOST=localhost PGPORT=9080 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>&1"
+    print_status "Running: timeout 2 PGHOST=localhost PGPORT=9080 PGUSER=$PGUSER psql -d $PGDATABASE -c 'SELECT 1 as test;' -t (should fail)"
+    timeout 2 bash -c "PGHOST=localhost PGPORT=9080 PGUSER=$PGUSER PGPASSWORD=$PGPASSWORD psql -d $PGDATABASE -c 'SELECT 1 as test;' -t 2>&1"
     TEST_RESULT=$?
 else
-    timeout 2 bash -c "PGHOST=localhost PGPORT=9080 PGUSER=caddy_test PGPASSWORD=test_password_123 psql -d caddy_test -c 'SELECT 1 as test;' -t 2>/dev/null | grep -q '1'" 2>/dev/null
+    timeout 2 bash -c "PGHOST=localhost PGPORT=9080 PGUSER=$PGUSER PGPASSWORD=$PGPASSWORD psql -d $PGDATABASE -c 'SELECT 1 as test;' -t 2>/dev/null | grep -q '1'" 2>/dev/null
     TEST_RESULT=$?
 fi
 if [ $TEST_RESULT -ne 0 ]; then
